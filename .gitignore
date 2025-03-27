@@ -4,6 +4,10 @@ glasir_timetable/credentials.json
 # Ignore Others directory
 Others/
 
+# Ignore weeks directory with timetable data
+glasir_timetable/weeks/
+weeks/
+
 # Node modules
 node_modules/
 
