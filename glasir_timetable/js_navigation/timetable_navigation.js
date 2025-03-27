@@ -5,6 +5,18 @@
  * using the MyUpdate() JavaScript function as described in the analysis report.
  */
 
+// Configuration object to control behavior
+window.glasirTimetable = window.glasirTimetable || {
+  // When true, allows UI-based methods as fallback when JS methods fail
+  // When false, will only use JavaScript methods and fail fast
+  useUIFallback: false,
+  
+  // Set debug level: 0=none, 1=warnings, 2=info, 3=debug
+  debugLevel: 1,
+  
+  // Add more configuration options here as needed
+};
+
 /**
  * Check if the MyUpdate function exists and is callable
  * 
@@ -541,6 +553,183 @@ function extractAllHomeworkContent(lessonIds) {
   return homeworkMap;
 }
 
+/**
+ * Get all available weeks from the timetable navigation.
+ * @returns {Array} Array of week objects with properties: weekNum, v, weekText, isCurrentWeek
+ */
+function getAllWeeks() {
+    try {
+        // Find all week buttons
+        const buttons = Array.from(document.querySelectorAll('.UgeKnap, .UgeKnapValgt'));
+        console.log("Found week buttons:", buttons.length);
+        
+        // Process each button
+        const weeks = buttons.map(btn => {
+            const onclick = btn.getAttribute('onclick') || '';
+            const vMatch = onclick.match(/v=(-?\d+)/);
+            const v = vMatch ? parseInt(vMatch[1]) : null;
+            const weekText = btn.textContent.trim();
+            const weekNum = weekText.match(/\d+/) ? parseInt(weekText.match(/\d+/)[0]) : null;
+            
+            // Is this the currently selected week?
+            const isCurrentWeek = btn.className.includes('UgeKnapValgt');
+            
+            // Get position information
+            let rowIndex = -1;
+            let colIndex = -1;
+            let month = null;
+            
+            // Get location in the table
+            const parentTd = btn.closest('td');
+            const parentTr = parentTd ? parentTd.closest('tr') : null;
+            
+            if (parentTr) {
+                rowIndex = Array.from(document.querySelectorAll('tr')).indexOf(parentTr);
+                colIndex = Array.from(parentTr.querySelectorAll('td')).indexOf(parentTd);
+                
+                // Try to determine the month from nearby month headers
+                const monthHeaders = Array.from(parentTr.querySelectorAll('td')).filter(td => {
+                    const text = td.textContent.trim().toLowerCase();
+                    return text.match(/jan|feb|mar|apr|mai|jun|jul|aug|sep|okt|nov|des/i);
+                });
+                
+                if (monthHeaders.length > 0) {
+                    // Find closest month header
+                    let closestHeader = null;
+                    let minDistance = Infinity;
+                    
+                    for (const header of monthHeaders) {
+                        const headerIndex = Array.from(parentTr.querySelectorAll('td')).indexOf(header);
+                        const distance = Math.abs(headerIndex - colIndex);
+                        
+                        if (distance < minDistance) {
+                            minDistance = distance;
+                            closestHeader = header;
+                        }
+                    }
+                    
+                    if (closestHeader) {
+                        const text = closestHeader.textContent.trim().toLowerCase();
+                        const monthMatch = text.match(/jan|feb|mar|apr|mai|jun|jul|aug|sep|okt|nov|des/i);
+                        if (monthMatch) {
+                            month = monthMatch[0].toLowerCase();
+                        }
+                    }
+                }
+            }
+            
+            return {
+                weekNum,
+                v,
+                weekText,
+                rowIndex,
+                colIndex,
+                month,
+                isCurrentWeek
+            };
+        }).filter(item => item.weekNum !== null && item.v !== null);
+        
+        // Do some additional processing to determine the year for each week
+        const currentYear = new Date().getFullYear();
+        
+        // Group weeks by row to identify year breaks
+        const rowGroups = {};
+        weeks.forEach(week => {
+            if (!(week.rowIndex in rowGroups)) {
+                rowGroups[week.rowIndex] = [];
+            }
+            rowGroups[week.rowIndex].push(week);
+        });
+        
+        // Sort rows by index
+        const sortedRows = Object.keys(rowGroups).map(Number).sort((a, b) => a - b);
+        
+        // First half academic year: Aug-Dec (33-52)
+        // Second half academic year: Jan-Jul (1-32)
+        const firstHalfMonths = ['aug', 'sep', 'okt', 'nov', 'des'];
+        const secondHalfMonths = ['jan', 'feb', 'mar', 'apr', 'mai', 'jun', 'jul'];
+        
+        // Identify academic year boundaries by analyzing rows
+        let currentAcademicYear = 1;
+        let previousRow = null;
+        
+        sortedRows.forEach(rowIndex => {
+            const currentRow = rowGroups[rowIndex];
+            
+            // Sort weeks in this row by column
+            currentRow.sort((a, b) => a.colIndex - b.colIndex);
+            
+            // Check if this row starts a new academic year
+            let startsNewYear = false;
+            
+            if (previousRow) {
+                const prevLastWeek = previousRow[previousRow.length - 1];
+                const currFirstWeek = currentRow[0];
+                
+                // If week number jumps significantly or resets, likely a new year
+                if (currFirstWeek.weekNum < prevLastWeek.weekNum && 
+                    (prevLastWeek.weekNum - currFirstWeek.weekNum > 20)) {
+                    startsNewYear = true;
+                }
+                
+                // If month transitions from July to August, likely a new year
+                if (prevLastWeek.month === 'jul' && currFirstWeek.month === 'aug') {
+                    startsNewYear = true;
+                }
+            }
+            
+            if (startsNewYear) {
+                currentAcademicYear++;
+            }
+            
+            // Assign year to all weeks in this row
+            currentRow.forEach(week => {
+                week.academicYear = currentAcademicYear;
+                
+                // Try to determine the actual calendar year for each week
+                if (week.month) {
+                    if (firstHalfMonths.includes(week.month)) {
+                        // First half (Aug-Dec) is current year
+                        week.year = currentYear;
+                    } else if (secondHalfMonths.includes(week.month)) {
+                        // Second half (Jan-Jul) is next year
+                        week.year = currentYear + 1;
+                    } else {
+                        // Fallback
+                        week.year = currentYear;
+                    }
+                } else {
+                    // Fallback to current year if month not identified
+                    week.year = currentYear;
+                }
+                
+                // For academic year display
+                if (week.month) {
+                    if (firstHalfMonths.includes(week.month)) {
+                        // First half (Aug-Dec): Year X/X+1
+                        week.academicYearText = `${currentYear}/${currentYear + 1}`;
+                    } else if (secondHalfMonths.includes(week.month)) {
+                        // Second half (Jan-Jul): Year X-1/X
+                        week.academicYearText = `${currentYear - 1}/${currentYear}`;
+                    } else {
+                        week.academicYearText = `Year ${week.academicYear}`;
+                    }
+                } else {
+                    week.academicYearText = `Year ${week.academicYear}`;
+                }
+            });
+            
+            previousRow = currentRow;
+        });
+        
+        console.log("Finished processing weeks, found:", weeks.length);
+        return weeks;
+    } catch (error) {
+        console.error("Error getting all weeks:", error);
+        return [];
+    }
+}
+
 // Export functions to make them available to the page context
 window.glasirTimetable = {
   checkMyUpdateExists,
@@ -549,5 +738,6 @@ window.glasirTimetable = {
   extractWeekInfo,
   getStudentId,
   extractHomeworkContent,
-  extractAllHomeworkContent
+  extractAllHomeworkContent,
+  getAllWeeks
 }; 

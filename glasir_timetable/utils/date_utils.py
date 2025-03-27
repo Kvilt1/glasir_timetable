@@ -92,6 +92,29 @@ def parse_date(date_str, year=None):
                 'month': month.zfill(2),
                 'year': str(year)
             }
+        
+        # Handle DD/MM-YYYY format (like 24/3-2025)
+        match = re.match(r'(\d{1,2})/(\d{1,2})-(\d{4})', date_str)
+        if match:
+            day, month, year = match.groups()
+            return {
+                'day': day.zfill(2),
+                'month': month.zfill(2),
+                'year': year
+            }
+    
+    # Try to handle DD/MM-YYYY format (like "24/3-2025") if not caught by the slash format handler
+    pattern = re.compile(r'(\d{1,2})/(\d{1,2})-(\d{4})')
+    match = pattern.match(date_str)
+    
+    if match:
+        day, month, year = match.groups()
+        # Format with leading zeros
+        return {
+            'day': day.zfill(2),
+            'month': month.zfill(2),
+            'year': year
+        }
     
     # If we got here, we couldn't parse the date
     return None
@@ -102,7 +125,7 @@ def format_date(date_dict, output_format='hyphen'):
     
     Args:
         date_dict (dict): Dictionary with 'year', 'month', 'day' keys
-        output_format (str): The desired output format ('hyphen', 'period', 'slash', 'filename')
+        output_format (str): The desired output format ('hyphen', 'period', 'slash', 'filename', 'iso')
         
     Returns:
         str: Formatted date string or None if input is invalid
@@ -127,6 +150,8 @@ def format_date(date_dict, output_format='hyphen'):
         return f"{day}/{month}/{year}"
     elif output_format == 'filename':
         return f"{month}.{day}"  # Used in filename formatting: MM.DD
+    elif output_format == 'iso':
+        return f"{year}-{month}-{day}"  # ISO 8601 format YYYY-MM-DD
     else:
         return None
 
@@ -136,7 +161,7 @@ def convert_date_format(date_str, output_format='hyphen', year=None):
     
     Args:
         date_str (str): The date string to convert
-        output_format (str): The desired output format ('hyphen', 'period', 'slash', 'filename')
+        output_format (str): The desired output format ('hyphen', 'period', 'slash', 'filename', 'iso')
         year (int, optional): The year to use if not present in the date string
         
     Returns:
@@ -184,4 +209,36 @@ def get_filename_date_format(start_date_str, end_date_str, year=None):
         # This creates the MM.DD-MM.DD format needed for the filename
         return f"{start_filename}-{end_filename}"
     
+    return None
+
+def to_iso_date(date_str, year=None):
+    """
+    Convert a date string to ISO 8601 format (YYYY-MM-DD).
+    
+    Args:
+        date_str (str): The date string to convert
+        year (int, optional): The year to use if not present in the date string
+        
+    Returns:
+        str: Date in ISO 8601 format or None if parsing fails
+    """
+    if not date_str:
+        return None
+        
+    # Try using our standard converter first
+    iso_date = convert_date_format(date_str, 'iso', year)
+    if iso_date:
+        return iso_date
+    
+    # Try to handle edge cases directly
+    # Handle DD/MM-YYYY format (like "24/3-2025")
+    pattern = re.compile(r'(\d{1,2})/(\d{1,2})-(\d{4})')
+    match = pattern.match(date_str)
+    
+    if match:
+        day, month, year = match.groups()
+        # Format with leading zeros
+        return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+    
+    # If nothing worked, return None
     return None 

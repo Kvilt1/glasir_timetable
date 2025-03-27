@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
 """
 Module for navigating between weeks in the Glasir timetable.
+
+DEPRECATION NOTICE:
+------------------
+This module provides UI-based navigation which is now deprecated.
+The preferred approach is to use JavaScript-based navigation from the
+glasir_timetable.js_navigation module, which is faster and more reliable.
+
+This module is kept for backward compatibility and as a fallback when
+JavaScript navigation is not available.
 """
 import re
 import asyncio
 import json
 from datetime import datetime, timedelta
+import logging
+from glasir_timetable import logger
 
 async def analyze_week_structure(page):
     """
@@ -17,7 +28,7 @@ async def analyze_week_structure(page):
     - academic_year_sections: Dictionary mapping academic year names to their week data
     - current_section: The academic year section the current week belongs to
     """
-    print("Analyzing timetable week structure...")
+    logger.info("Analyzing timetable week structure...")
     
     # Extract all week buttons and their v-values with row information
     all_weeks = await page.evaluate("""
@@ -180,7 +191,7 @@ async def analyze_week_structure(page):
     }
     """)
     
-    print(f"Found {len(all_weeks)} week buttons in the navigation")
+    logger.info(f"Found {len(all_weeks)} week buttons in the navigation")
     
     # Sort weeks by v-value to examine the pattern
     sorted_by_v = sorted(all_weeks, key=lambda w: w.get('v', 0))
@@ -206,16 +217,16 @@ async def analyze_week_structure(page):
         # Log duplicate week numbers for debugging
         duplicates = {num: weeks for num, weeks in week_num_groups.items() if len(weeks) > 1}
         if duplicates:
-            print(f"Section {year_key} has duplicate week numbers: {', '.join(map(str, duplicates.keys()))}")
+            logger.info(f"Section {year_key} has duplicate week numbers: {', '.join(map(str, duplicates.keys()))}")
             for week_num, dup_weeks in duplicates.items():
-                print(f"  Week {week_num}: v-values {', '.join(map(lambda w: str(w['v']), dup_weeks))}")
+                logger.info(f"  Week {week_num}: v-values {', '.join(map(lambda w: str(w['v']), dup_weeks))}")
     
     # Determine which section contains the current week
     current_section_key = None
     for key, section in academic_year_sections.items():
         if any(w.get('isCurrentWeek', False) for w in section):
             current_section_key = key
-            print(f"Current week belongs to section: {key}")
+            logger.info(f"Current week belongs to section: {key}")
             break
     
     # If we couldn't find the current section, fallback to a heuristic
@@ -238,7 +249,7 @@ async def analyze_week_structure(page):
         if not current_section_key:
             current_section_key = list(academic_year_sections.keys())[-1]
             
-        print(f"Estimated current week belongs to section: {current_section_key}")
+        logger.info(f"Estimated current week belongs to section: {current_section_key}")
     
     # Print comprehensive information about each section
     for key, section in academic_year_sections.items():
@@ -259,8 +270,8 @@ async def analyze_week_structure(page):
             'v_mapping': v_mapping
         }
         
-        print(f"Section {key}: Weeks {', '.join(map(str, week_nums))}")
-        print(f"  V-value mapping: {json.dumps(v_mapping)}")
+        logger.info(f"Section {key}: Weeks {', '.join(map(str, week_nums))}")
+        logger.info(f"  V-value mapping: {json.dumps(v_mapping)}")
     
     return all_weeks, academic_year_sections, current_section_key
 
@@ -272,14 +283,14 @@ async def find_week_v_value(page, target_week_offset):
     
     Enhanced to stay within the same academic year when navigating.
     """
-    print(f"Finding v-value for week offset: {target_week_offset}")
+    logger.info(f"Finding v-value for week offset: {target_week_offset}")
     
     # Get current week number
     current_week_info = await get_current_week_info(page)
     current_week_num = current_week_info.get('weekNumber')
     
     if current_week_num is None:
-        print("Warning: Could not determine current week number, using default v-value.")
+        logger.warning("Warning: Could not determine current week number, using default v-value.")
         return target_week_offset  # Fallback to the old behavior
     
     # Calculate the target week number
@@ -389,9 +400,9 @@ async def find_week_v_value(page, target_week_offset):
             break
     
     if not current_academic_year:
-        print("Warning: Could not determine current academic year, will use all week buttons.")
+        logger.warning("Warning: Could not determine current academic year, will use all week buttons.")
     else:
-        print(f"Current week is in academic year: {current_academic_year}")
+        logger.info(f"Current week is in academic year: {current_academic_year}")
         # Filter to only include buttons from the same academic year
         week_buttons = [btn for btn in week_buttons if btn.get('academicYear') == current_academic_year]
     
@@ -406,11 +417,11 @@ async def find_week_v_value(page, target_week_offset):
             break
     
     if not current_week_button:
-        print("Warning: Could not find the button for the current week.")
+        logger.warning("Warning: Could not find the button for the current week.")
         # Find the button that matches our target week number
         for button in week_buttons:
             if button['weekNum'] == target_week_num:
-                print(f"Found v-value {button['v']} for week {target_week_num}")
+                logger.info(f"Found v-value {button['v']} for week {target_week_num}")
                 return button['v']
     else:
         # Find the button at the right offset from the current week
@@ -419,10 +430,10 @@ async def find_week_v_value(page, target_week_offset):
         
         if 0 <= target_index < len(week_buttons):
             target_button = week_buttons[target_index]
-            print(f"Found v-value {target_button['v']} for week {target_button['weekNum']} (offset {target_week_offset} from current week {current_week_num})")
+            logger.info(f"Found v-value {target_button['v']} for week {target_button['weekNum']} (offset {target_week_offset} from current week {current_week_num})")
             return target_button['v']
     
-    print(f"Warning: Could not find v-value for target week (offset {target_week_offset}), using default v-value.")
+    logger.warning(f"Warning: Could not find v-value for target week (offset {target_week_offset}), using default v-value.")
     return target_week_offset  # Fallback to the old behavior
 
 async def navigate_to_week(page, target_week_offset):
@@ -430,7 +441,7 @@ async def navigate_to_week(page, target_week_offset):
     Navigate to a specific week relative to the current week
     target_week_offset: 0 for current week, 1 for next week, -1 for previous week, etc.
     """
-    print(f"Navigating to week with offset: {target_week_offset}...")
+    logger.info(f"Navigating to week with offset: {target_week_offset}...")
     
     # Get current week info before navigation
     current_week_info = await get_current_week_info(page)
@@ -438,7 +449,7 @@ async def navigate_to_week(page, target_week_offset):
     expected_week_num = current_week_num + target_week_offset if current_week_num else None
     
     if expected_week_num:
-        print(f"Current week: {current_week_num}, expecting to navigate to week: {expected_week_num}")
+        logger.info(f"Current week: {current_week_num}, expecting to navigate to week: {expected_week_num}")
     
     # Find the correct v-value for the target week
     v_value = await find_week_v_value(page, target_week_offset)
@@ -494,7 +505,7 @@ async def navigate_to_week(page, target_week_offset):
     try:
         await page.wait_for_selector('.UgeKnapValgt', state="visible", timeout=5000)
     except:
-        print("Warning: Could not find selected week button after navigation")
+        logger.warning("Warning: Could not find selected week button after navigation")
     
     # Get week info after navigation
     week_info = await get_current_week_info(page)
@@ -505,7 +516,7 @@ async def navigate_to_week(page, target_week_offset):
     retry_count = 0
     
     while expected_week_num and loaded_week_num != expected_week_num and retry_count < max_retries:
-        print(f"Expected week {expected_week_num} but loaded week {loaded_week_num}. Retrying navigation...")
+        logger.info(f"Expected week {expected_week_num} but loaded week {loaded_week_num}. Retrying navigation...")
         retry_count += 1
         
         # Try to directly find and click the button with the expected week number
@@ -551,16 +562,16 @@ async def navigate_to_week(page, target_week_offset):
         try:
             await page.wait_for_selector('.UgeKnapValgt', state="visible", timeout=5000)
         except:
-            print("Warning: Could not find selected week button after retry")
+            logger.warning("Warning: Could not find selected week button after retry")
         
         # Check week info again
         week_info = await get_current_week_info(page)
         loaded_week_num = week_info.get('weekNumber')
     
     if expected_week_num and loaded_week_num != expected_week_num:
-        print(f"Warning: Failed to navigate to week {expected_week_num}, loaded week {loaded_week_num} instead.")
+        logger.warning(f"Warning: Failed to navigate to week {expected_week_num}, loaded week {loaded_week_num} instead.")
     else:
-        print(f"Successfully navigated to week {loaded_week_num}")
+        logger.info(f"Successfully navigated to week {loaded_week_num}")
     
     return week_info
 
@@ -638,7 +649,7 @@ async def return_to_baseline(page, v_value):
     Navigate directly to the baseline week using its specific v-value.
     This ensures we always return to the same instance of the week even if there are duplicates.
     """
-    print(f"Returning to baseline week with v-value: {v_value}")
+    logger.info(f"Returning to baseline week with v-value: {v_value}")
     
     # First try to click the appropriate link
     clicked = await page.evaluate(f"""
@@ -660,7 +671,7 @@ async def return_to_baseline(page, v_value):
         id_param = id_match.group(0) if id_match else "id={E79174A3-7D8D-4AA7-A8F7-D8C869E5FF36}"
         target_url = f"{base_url}#{id_param}&v={v_value}"
         
-        print(f"Navigating directly to baseline URL: {target_url}")
+        logger.info(f"Navigating directly to baseline URL: {target_url}")
         await page.goto(target_url)
     
     # Wait for page to load
@@ -681,6 +692,6 @@ async def return_to_baseline(page, v_value):
     """)
     
     if loaded_v_value == v_value:
-        print(f"Successfully returned to baseline week with v-value: {v_value}")
+        logger.info(f"Successfully returned to baseline week with v-value: {v_value}")
     else:
-        print(f"Warning: Expected v-value {v_value} but loaded v-value {loaded_v_value}") 
+        logger.warning(f"Warning: Expected v-value {v_value} but loaded v-value {loaded_v_value}") 

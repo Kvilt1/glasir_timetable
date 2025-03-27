@@ -93,3 +93,52 @@ Parameters:
 - `MyInsertAreaId`: The DOM element ID where to insert the response (typically 'MyWindowMain')
 
 Our implementation directly calls this function with the appropriate parameters, avoiding the need to simulate UI clicks. 
+
+## New Features in v1.2.0
+
+### JavaScript-Based Navigation
+
+We've completely rewritten the week navigation system to exclusively use JavaScript-based navigation, which provides several benefits:
+
+1. **Faster Navigation**: Direct JavaScript calls are much faster than UI simulation
+2. **More Reliable**: Less dependent on UI structure changes
+3. **Better Error Handling**: More consistent error reporting
+
+### Export All Weeks Function
+
+The "Export All Weeks" functionality has been completely rewritten with the following improvements:
+
+1. **Dedicated Module**: Now in a separate module for better organization
+2. **Improved Error Handling**: Better tracking and reporting of errors
+3. **Consistent Date Formatting**: Standardized date and filename formats
+4. **JavaScript-Only Implementation**: Removed all UI-based navigation for consistency
+
+#### Usage
+
+```python
+from glasir_timetable.js_navigation import export_all_weeks
+
+# In an async function:
+export_results = await export_all_weeks(
+    page=page,  # Playwright page object
+    output_dir="glasir_timetable/weeks",
+    teacher_map=teacher_map,
+    student_id=student_id  # Optional
+)
+
+print(f"Exported {export_results['processed_weeks']} of {export_results['total_weeks']} weeks")
+```
+
+### New Utility Functions
+
+We've added utility functions to help with week data processing:
+
+- `normalize_dates()`: Ensures consistent date formatting
+- `normalize_week_number()`: Handles irregular week numbers 
+- `generate_week_filename()`: Creates standardized filenames
+
+These functions are available from the `glasir_timetable.utils` module:
+
+```python
+from glasir_timetable.utils import normalize_dates, normalize_week_number, generate_week_filename
+``` 

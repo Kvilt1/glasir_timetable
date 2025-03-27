@@ -9,6 +9,9 @@ import json
 from pathlib import Path
 import time
 import re
+import asyncio
+import logging
+from glasir_timetable import logger
 
 # Track if console listener is already attached
 _console_listener_attached = False
@@ -41,14 +44,14 @@ async def inject_timetable_script(page):
         
         # Inject the script into the page
         await page.evaluate(js_code)
-        print("JavaScript navigation script injected")
+        logger.info("JavaScript navigation script injected")
         
         # Verify that the script was properly injected by checking the glasirTimetable object
         check_result = await page.evaluate("typeof window.glasirTimetable === 'object'")
         if not check_result:
             raise JavaScriptIntegrationError("JavaScript integration failed - glasirTimetable object not found")
         
-        print("JavaScript integration verified")
+        logger.info("JavaScript integration verified")
     except Exception as e:
         raise JavaScriptIntegrationError(f"Failed to inject JavaScript: {str(e)}")
 
@@ -69,10 +72,10 @@ async def verify_myupdate_function(page):
         # Check if the MyUpdate function exists using our injected function
         exists = await page.evaluate("glasirTimetable.checkMyUpdateExists()")
         if exists:
-            print("MyUpdate function verified and available")
+            logger.info("MyUpdate function verified and available")
             return True
         else:
-            print("WARNING: MyUpdate function not found on the page!")
+            logger.warning("WARNING: MyUpdate function not found on the page!")
             return False
     except Exception as e:
         raise JavaScriptIntegrationError(f"Failed to verify MyUpdate function: {str(e)}")
@@ -97,9 +100,9 @@ async def get_student_id(page):
         
         # Validate the format of the student ID (should be a GUID)
         if not re.match(r'^[{]?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}[}]?$', student_id):
-            print(f"WARNING: Student ID does not match expected GUID format: {student_id}")
+            logger.warning(f"WARNING: Student ID does not match expected GUID format: {student_id}")
         
-        print(f"Found student ID: {student_id}")
+        logger.info(f"Found student ID: {student_id}")
         return student_id
     except Exception as e:
         raise JavaScriptIntegrationError(f"Failed to get student ID: {str(e)}")
@@ -129,7 +132,7 @@ async def navigate_to_week_js(page, week_offset, student_id=None):
             raise JavaScriptIntegrationError("Cannot navigate: MyUpdate function not available")
         
         # Call the JavaScript function to navigate
-        print(f"Navigating to week offset {week_offset}...")
+        logger.info(f"Navigating to week offset {week_offset}...")
         week_info = await page.evaluate(f"glasirTimetable.navigateToWeek({week_offset}, '{student_id}')")
         
         # Wait for navigation to complete (additional safeguard)
@@ -137,9 +140,9 @@ async def navigate_to_week_js(page, week_offset, student_id=None):
         
         # Validate the returned week info
         if not week_info or not week_info.get('weekNumber'):
-            print("WARNING: Navigation succeeded but returned incomplete week information")
+            logger.warning("WARNING: Navigation succeeded but returned incomplete week information")
         else:
-            print(f"Navigated to: Week {week_info.get('weekNumber')} ({week_info.get('startDate')} - {week_info.get('endDate')})")
+            logger.info(f"Navigated to: Week {week_info.get('weekNumber')} ({week_info.get('startDate')} - {week_info.get('endDate')})")
         
         return week_info
     except Exception as e:
@@ -177,7 +180,7 @@ async def extract_timetable_data_js(page, teacher_map=None):
         
         # Check if we found any classes
         if not classes:
-            print("WARNING: No classes found in the timetable data")
+            logger.warning("WARNING: No classes found in the timetable data")
         
         # If teacher_map was provided, use it to replace the teacherFullName field
         if teacher_map:
@@ -199,7 +202,7 @@ async def extract_timetable_data_js(page, teacher_map=None):
         
         # Ensure essential fields are present
         if not timetable_data["week_number"]:
-            print("WARNING: Week number is missing in extracted data")
+            logger.warning("WARNING: Week number is missing in extracted data")
         
         return timetable_data, {
             "week_num": week_info.get("weekNumber"),
@@ -246,7 +249,7 @@ async def extract_homework_content_js(page, lesson_id):
         # Check if the JavaScript integration is available
         check_result = await page.evaluate("typeof window.glasirTimetable === 'object' && typeof window.glasirTimetable.extractHomeworkContent === 'function'")
         if not check_result:
-            print("JavaScript homework extraction not available, falling back to UI method")
+            logger.warning("JavaScript homework extraction not available, falling back to UI method")
             return None
             
         # Call the JavaScript function directly
@@ -260,12 +263,12 @@ async def extract_homework_content_js(page, lesson_id):
         
         return homework_content
     except Exception as e:
-        print(f"JavaScript homework extraction failed: {e}")
+        logger.error(f"JavaScript homework extraction failed: {e}")
         return None
 
 def _console_listener(msg):
     """Console listener callback function to print browser console messages."""
-    print(f"BROWSER CONSOLE: {msg.text}")
+    logger.info(f"BROWSER CONSOLE: {msg.text}")
 
 async def extract_all_homework_content_js(page, lesson_ids):
     """
@@ -285,12 +288,12 @@ async def extract_all_homework_content_js(page, lesson_ids):
         check_result = await page.evaluate("typeof window.glasirTimetable === 'object' && typeof window.glasirTimetable.extractAllHomeworkContent === 'function'")
         
         if not check_result:
-            print("Parallel JavaScript homework extraction not available")
+            logger.warning("Parallel JavaScript homework extraction not available")
             return {}
             
         # Call the JavaScript function with all lesson IDs
-        print(f"Using parallel JavaScript method for homework extraction ({len(lesson_ids)} notes)")
-        print(f"Calling JavaScript extractAllHomeworkContent with {len(lesson_ids)} IDs")
+        logger.info(f"Using parallel JavaScript method for homework extraction ({len(lesson_ids)} notes)")
+        logger.info(f"Calling JavaScript extractAllHomeworkContent with {len(lesson_ids)} IDs")
         
         # Wait slightly longer before calling to ensure scripts are ready
         await page.wait_for_timeout(200)
@@ -304,12 +307,12 @@ async def extract_all_homework_content_js(page, lesson_ids):
         homework_map = await page.evaluate(f"glasirTimetable.extractAllHomeworkContent({json.dumps(lesson_ids)})")
         
         # Debug information about what was returned
-        print(f"JavaScript returned homework data for {len(homework_map) if homework_map else 0} lessons")
+        logger.info(f"JavaScript returned homework data for {len(homework_map) if homework_map else 0} lessons")
         for lesson_id, content in (homework_map or {}).items():
             if content:
-                print(f"Found homework for {lesson_id}: {content[:30]}...")
+                logger.info(f"Found homework for {lesson_id}: {content[:30]}...")
             else:
-                print(f"No content for {lesson_id}")
+                logger.info(f"No content for {lesson_id}")
         
         # Clean up any HTML tags in the content
         import re
@@ -318,14 +321,14 @@ async def extract_all_homework_content_js(page, lesson_ids):
             if isinstance(content, str):
                 cleaned_content = re.sub(r'<[^>]*>', '', content).strip()
                 cleaned_map[lesson_id] = cleaned_content
-                print(f"Cleaned homework for {lesson_id}: {cleaned_content[:30]}...")
+                logger.info(f"Cleaned homework for {lesson_id}: {cleaned_content[:30]}...")
             else:
                 cleaned_map[lesson_id] = content
-                print(f"No cleaning needed for {lesson_id} (value type: {type(content)})")
+                logger.info(f"No cleaning needed for {lesson_id} (value type: {type(content)})")
         
         return cleaned_map
     except Exception as e:
-        print(f"Parallel JavaScript homework extraction failed: {e}")
+        logger.error(f"Parallel JavaScript homework extraction failed: {e}")
         # Print stack trace for debugging
         import traceback
         traceback.print_exc()
@@ -345,20 +348,20 @@ async def test_javascript_integration(page):
         JavaScriptIntegrationError: If the test fails
     """
     try:
-        print("Testing JavaScript integration...")
+        logger.info("Testing JavaScript integration...")
         
         # 1. Verify MyUpdate function exists
         my_update_exists = await verify_myupdate_function(page)
         if not my_update_exists:
-            print("WARNING: MyUpdate function not found, but trying to continue...")
+            logger.warning("WARNING: MyUpdate function not found, but trying to continue...")
         
         # 2. Try to get student ID
         student_id = await get_student_id(page)
-        print(f"Test: Student ID extraction successful - {student_id}")
+        logger.info(f"Test: Student ID extraction successful - {student_id}")
         
         # 3. Try to extract current week info
         week_info = await page.evaluate("glasirTimetable.extractWeekInfo()")
-        print(f"Test: Week info extraction successful - Week {week_info.get('weekNumber')}")
+        logger.info(f"Test: Week info extraction successful - Week {week_info.get('weekNumber')}")
         
         # 4. Try a simple navigation to current week (offset 0) and back
         if my_update_exists:

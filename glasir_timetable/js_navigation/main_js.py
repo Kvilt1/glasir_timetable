@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Modified main entry point for the Glasir Timetable application.
+[DEPRECATED] Modified main entry point for the Glasir Timetable application.
 Uses JavaScript-based navigation instead of UI-based navigation.
+
+THIS FILE IS DEPRECATED - The functionality has been integrated into the main module.
+Use the standard main.py which now uses JavaScript navigation by default.
 """
 import os
 import json
@@ -38,7 +41,7 @@ except ModuleNotFoundError:
         raise
 
 # Import JavaScript integration functions
-from scripts.js_integration import (
+from glasir_timetable.js_navigation.js_integration import (
     inject_timetable_script,
     get_student_id,
     navigate_to_week_js,
@@ -50,8 +53,14 @@ from scripts.js_integration import (
 
 async def main():
     """
-    Main entry point for the Glasir Timetable application.
+    [DEPRECATED] Main entry point for JS-specific Glasir Timetable application.
+    
+    This functionality has been merged into the main module. Please use the standard
+    main.py which now uses JavaScript navigation by default.
     """
+    print("WARNING: This script is deprecated. Please use the standard main.py which now")
+    print("uses JavaScript navigation by default. This script will be removed in a future version.")
+    
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Extract timetable data from Glasir')
     parser.add_argument('--email', type=str, help='Email for login')
