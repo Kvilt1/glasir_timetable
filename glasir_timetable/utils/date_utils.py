@@ -5,6 +5,14 @@ Provides consistent date parsing and formatting across the application.
 """
 import re
 from datetime import datetime
+from functools import lru_cache
+
+# Pre-compile regex patterns for better performance
+PERIOD_DATE_FULL = re.compile(r'(\d{1,2})\.(\d{1,2})\.(\d{4})')
+PERIOD_DATE_SHORT = re.compile(r'(\d{1,2})\.(\d{1,2})')
+HYPHEN_DATE = re.compile(r'(\d{4})-(\d{1,2})-(\d{1,2})')
+SLASH_DATE_SHORT = re.compile(r'(\d{1,2})/(\d{1,2})')
+SLASH_DATE_WITH_YEAR = re.compile(r'(\d{1,2})/(\d{1,2})-(\d{4})')
 
 def detect_date_format(date_str):
     """
@@ -28,9 +36,11 @@ def detect_date_format(date_str):
     else:
         return 'unknown'
 
+@lru_cache(maxsize=256)
 def parse_date(date_str, year=None):
     """
     Parse a date string in various formats and return standardized components.
+    Cached for better performance with frequently used dates.
     
     Args:
         date_str (str): The date string to parse
@@ -46,70 +56,50 @@ def parse_date(date_str, year=None):
     if year is None:
         year = datetime.now().year
         
-    format_type = detect_date_format(date_str)
-    
     # Handle period format (DD.MM.YYYY or DD.MM)
-    if format_type == 'period':
-        # Try DD.MM.YYYY format
-        match = re.match(r'(\d{1,2})\.(\d{1,2})\.(\d{4})', date_str)
-        if match:
-            day, month, year = match.groups()
-            return {
-                'day': day.zfill(2),
-                'month': month.zfill(2),
-                'year': year
-            }
-        
-        # Try DD.MM format
-        match = re.match(r'(\d{1,2})\.(\d{1,2})', date_str)
-        if match:
-            day, month = match.groups()
-            return {
-                'day': day.zfill(2),
-                'month': month.zfill(2),
-                'year': str(year)
-            }
-    
-    # Handle hyphen format (YYYY-MM-DD)
-    elif format_type == 'hyphen':
-        parts = date_str.split('-')
-        if len(parts) == 3:
-            year, month, day = parts
-            return {
-                'day': day.zfill(2),
-                'month': month.zfill(2),
-                'year': year
-            }
-    
-    # Handle slash format (DD/MM or MM/DD)
-    elif format_type == 'slash':
-        parts = date_str.split('/')
-        if len(parts) == 2:
-            # Assume DD/MM format (European)
-            day, month = parts
-            return {
-                'day': day.zfill(2),
-                'month': month.zfill(2),
-                'year': str(year)
-            }
-        
-        # Handle DD/MM-YYYY format (like 24/3-2025)
-        match = re.match(r'(\d{1,2})/(\d{1,2})-(\d{4})', date_str)
-        if match:
-            day, month, year = match.groups()
-            return {
-                'day': day.zfill(2),
-                'month': month.zfill(2),
-                'year': year
-            }
-    
-    # Try to handle DD/MM-YYYY format (like "24/3-2025") if not caught by the slash format handler
-    pattern = re.compile(r'(\d{1,2})/(\d{1,2})-(\d{4})')
-    match = pattern.match(date_str)
-    
+    match = PERIOD_DATE_FULL.match(date_str)
     if match:
         day, month, year = match.groups()
-        # Format with leading zeros
+        return {
+            'day': day.zfill(2),
+            'month': month.zfill(2),
+            'year': year
+        }
+    
+    match = PERIOD_DATE_SHORT.match(date_str)
+    if match:
+        day, month = match.groups()
+        return {
+            'day': day.zfill(2),
+            'month': month.zfill(2),
+            'year': str(year)
+        }
+    
+    # Handle hyphen format (YYYY-MM-DD)
+    match = HYPHEN_DATE.match(date_str)
+    if match:
+        year, month, day = match.groups()
+        return {
+            'day': day.zfill(2),
+            'month': month.zfill(2),
+            'year': year
+        }
+    
+    # Handle slash format (DD/MM)
+    match = SLASH_DATE_SHORT.match(date_str)
+    if match:
+        # Assume DD/MM format (European)
+        day, month = match.groups()
+        return {
+            'day': day.zfill(2),
+            'month': month.zfill(2),
+            'year': str(year)
+        }
+    
+    # Handle DD/MM-YYYY format (like 24/3-2025)
+    match = SLASH_DATE_WITH_YEAR.match(date_str)
+    if match:
+        day, month, year = match.groups()
         return {
             'day': day.zfill(2),
             'month': month.zfill(2),
@@ -155,9 +145,11 @@ def format_date(date_dict, output_format='hyphen'):
     else:
         return None
 
+@lru_cache(maxsize=128)
 def convert_date_format(date_str, output_format='hyphen', year=None):
     """
     Convert a date string from any supported format to the specified output format.
+    Cached for better performance with frequently used conversions.
     
     Args:
         date_str (str): The date string to convert
@@ -211,9 +203,11 @@ def get_filename_date_format(start_date_str, end_date_str, year=None):
     
     return None
 
+@lru_cache(maxsize=128)
 def to_iso_date(date_str, year=None):
     """
     Convert a date string to ISO 8601 format (YYYY-MM-DD).
+    Cached for better performance with frequently accessed dates.
     
     Args:
         date_str (str): The date string to convert
@@ -225,20 +219,95 @@ def to_iso_date(date_str, year=None):
     if not date_str:
         return None
         
-    # Try using our standard converter first
-    iso_date = convert_date_format(date_str, 'iso', year)
-    if iso_date:
-        return iso_date
+    # Use our standard converter
+    return convert_date_format(date_str, 'iso', year)
+
+def normalize_dates(start_date, end_date, year):
+    """
+    Normalize date format to ensure consistency.
     
-    # Try to handle edge cases directly
-    # Handle DD/MM-YYYY format (like "24/3-2025")
-    pattern = re.compile(r'(\d{1,2})/(\d{1,2})-(\d{4})')
-    match = pattern.match(date_str)
+    Args:
+        start_date (str): The start date
+        end_date (str): The end date
+        year (int): The year
+        
+    Returns:
+        tuple: Normalized (start_date, end_date)
+    """
+    # Add better logging for debugging date issues
+    from glasir_timetable import logger
+    logger.debug(f"Normalizing dates: start={start_date}, end={end_date}, year={year}")
     
-    if match:
-        day, month, year = match.groups()
-        # Format with leading zeros
-        return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+    # Check for year transitions (December to January)
+    if start_date and end_date:
+        # Try to extract month values
+        start_month = None
+        end_month = None
+        
+        # Parse dates to extract month values reliably
+        start_parsed = parse_date(start_date, year)
+        end_parsed = parse_date(end_date, year)
+        
+        if start_parsed and end_parsed:
+            try:
+                start_month = int(start_parsed['month'])
+                end_month = int(end_parsed['month'])
+            except (ValueError, KeyError):
+                pass
+        
+        # Handle year transitions (December to January)
+        if start_month and end_month:
+            logger.debug(f"Detected months: start_month={start_month}, end_month={end_month}")
+            
+            if start_month == 12 and end_month == 1:
+                # December to January transition
+                if not start_date.startswith(str(year)):
+                    start_date = f"{year}.{start_date}"
+                if not end_date.startswith(str(year+1)):
+                    end_date = f"{year+1}.{end_date}"
+                logger.debug(f"Year transition detected, updated dates: start={start_date}, end={end_date}")
+                return start_date, end_date
+            
+            # Account for academic year transitions (July/August)
+            if start_month == 7 and end_month == 8:
+                # July to August transition (academic year boundary)
+                if not start_date.startswith(str(year)):
+                    start_date = f"{year}.{start_date}"
+                if not end_date.startswith(str(year)):
+                    end_date = f"{year}.{end_date}"
+                logger.debug(f"Academic year transition detected, updated dates: start={start_date}, end={end_date}")
+                return start_date, end_date
     
-    # If nothing worked, return None
-    return None 
+    # Standard case - ensure dates have year prefix
+    if start_date and not start_date.startswith(str(year)):
+        start_date = f"{year}.{start_date}"
+    if end_date and not end_date.startswith(str(year)):
+        end_date = f"{year}.{end_date}"
+    
+    # Replace any hyphens with periods for consistency
+    if start_date:
+        start_date = start_date.replace('-', '.')
+    if end_date:
+        end_date = end_date.replace('-', '.')
+    
+    logger.debug(f"Normalized dates: start={start_date}, end={end_date}")
+    return start_date, end_date
+
+def parse_time_range(time_range):
+    """
+    Parse a time range string (e.g., "10:05-11:35") into start and end times.
+    
+    Args:
+        time_range (str): Time range in format "HH:MM-HH:MM"
+        
+    Returns:
+        tuple: (start_time, end_time) or (None, None) if parsing fails
+    """
+    if not time_range or '-' not in time_range:
+        return None, None
+    
+    parts = time_range.split('-')
+    if len(parts) != 2:
+        return None, None
+    
+    return parts[0].strip(), parts[1].strip() 

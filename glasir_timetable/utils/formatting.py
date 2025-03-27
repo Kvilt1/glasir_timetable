@@ -3,27 +3,16 @@
 Utility functions for formatting and date handling.
 """
 import re
+from glasir_timetable.utils.date_utils import convert_date_format, to_iso_date, normalize_dates, parse_time_range
 
 def format_date(date_str, year):
     """Format date from DD/MM to YYYY-MM-DD"""
     if not date_str:
         return ""
     
-    # Handle DD/MM-YYYY format (like "24/3-2025")
-    match = re.match(r'(\d{1,2})/(\d{1,2})-(\d{4})', date_str)
-    if match:
-        day, month, year_from_date = match.groups()
-        return f"{year_from_date}-{month.zfill(2)}-{day.zfill(2)}"
-        
-    # Handle DD/MM format
-    try:
-        if '/' in date_str:
-            day, month = date_str.split('/')
-            return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
-    except ValueError:
-        pass
-        
-    return date_str
+    # Use the consolidated date utilities for conversion
+    iso_date = to_iso_date(date_str, year)
+    return iso_date if iso_date else date_str
 
 def format_academic_year(year_code):
     """
@@ -72,97 +61,6 @@ def normalize_room_format(teacher, room, class_code=None):
         return f"{teacher} {room.replace('st.', 'St.')}"
     
     return default_format 
-
-def normalize_dates(start_date, end_date, year):
-    """
-    Normalize date format to ensure consistency.
-    
-    Args:
-        start_date (str): The start date
-        end_date (str): The end date
-        year (int): The year
-        
-    Returns:
-        tuple: Normalized (start_date, end_date)
-    """
-    # Add better logging for debugging date issues
-    from glasir_timetable import logger
-    logger.debug(f"Normalizing dates: start={start_date}, end={end_date}, year={year}")
-    
-    # Check for year transitions (December to January)
-    if start_date and end_date:
-        # Try to extract month values
-        start_month = None
-        end_month = None
-        
-        # Extract month from date strings
-        if '.' in start_date:
-            parts = start_date.split('.')
-            if len(parts) >= 2:
-                try:
-                    start_month = int(parts[1])
-                except ValueError:
-                    pass
-        elif '/' in start_date:
-            parts = start_date.split('/')
-            if len(parts) >= 2:
-                try:
-                    start_month = int(parts[0])  # DD/MM format
-                except ValueError:
-                    pass
-                    
-        if '.' in end_date:
-            parts = end_date.split('.')
-            if len(parts) >= 2:
-                try:
-                    end_month = int(parts[1])
-                except ValueError:
-                    pass
-        elif '/' in end_date:
-            parts = end_date.split('/')
-            if len(parts) >= 2:
-                try:
-                    end_month = int(parts[0])  # DD/MM format
-                except ValueError:
-                    pass
-        
-        # Handle year transitions (December to January)
-        if start_month and end_month:
-            logger.debug(f"Detected months: start_month={start_month}, end_month={end_month}")
-            
-            if start_month == 12 and end_month == 1:
-                # December to January transition
-                if not start_date.startswith(str(year)):
-                    start_date = f"{year}.{start_date}"
-                if not end_date.startswith(str(year+1)):
-                    end_date = f"{year+1}.{end_date}"
-                logger.debug(f"Year transition detected, updated dates: start={start_date}, end={end_date}")
-                return start_date, end_date
-            
-            # Account for academic year transitions (July/August)
-            if start_month == 7 and end_month == 8:
-                # July to August transition (academic year boundary)
-                if not start_date.startswith(str(year)):
-                    start_date = f"{year}.{start_date}"
-                if not end_date.startswith(str(year)):
-                    end_date = f"{year}.{end_date}"
-                logger.debug(f"Academic year transition detected, updated dates: start={start_date}, end={end_date}")
-                return start_date, end_date
-    
-    # Standard case - ensure dates have year prefix
-    if start_date and not start_date.startswith(str(year)):
-        start_date = f"{year}.{start_date}"
-    if end_date and not end_date.startswith(str(year)):
-        end_date = f"{year}.{end_date}"
-    
-    # Replace any hyphens with periods for consistency
-    if start_date:
-        start_date = start_date.replace('-', '.')
-    if end_date:
-        end_date = end_date.replace('-', '.')
-    
-    logger.debug(f"Normalized dates: start={start_date}, end={end_date}")
-    return start_date, end_date
 
 def normalize_week_number(week_num):
     """
@@ -306,28 +204,7 @@ def format_iso_date(date_str, year=None):
     Returns:
         str: Date in ISO 8601 format or original string if parsing fails
     """
-    from glasir_timetable.utils.date_utils import to_iso_date
-    
     iso_date = to_iso_date(date_str, year)
     if iso_date:
         return iso_date
     return date_str
-
-def parse_time_range(time_range):
-    """
-    Parse a time range string (e.g., "10:05-11:35") into start and end times.
-    
-    Args:
-        time_range (str): Time range in format "HH:MM-HH:MM"
-        
-    Returns:
-        tuple: (start_time, end_time) or (None, None) if parsing fails
-    """
-    if not time_range or '-' not in time_range:
-        return None, None
-    
-    parts = time_range.split('-')
-    if len(parts) != 2:
-        return None, None
-    
-    return parts[0].strip(), parts[1].strip()

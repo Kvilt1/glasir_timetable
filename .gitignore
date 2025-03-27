@@ -29,3 +29,6 @@ venv.bak/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Private individual user cursor rules
+.cursor/rules/_*.mdc
