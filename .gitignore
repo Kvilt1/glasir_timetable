@@ -1,5 +1,8 @@
 # Ignore credentials file
-credentials.json
+glasir_timetable/credentials.json
+
+# Ignore Others directory
+Others/
 
 # Node modules
 node_modules/

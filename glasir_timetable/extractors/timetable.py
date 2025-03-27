@@ -21,6 +21,31 @@ async def extract_homework_content(page, lesson_id):
         str: The extracted homework content, or None if no content was found.
     """
     try:
+        # First try JavaScript method if available
+        try:
+            # Check if the glasirTimetable JavaScript object exists
+            js_available = await page.evaluate("typeof window.glasirTimetable === 'object' && typeof window.glasirTimetable.extractHomeworkContent === 'function'")
+            
+            if js_available:
+                print(f"Using JavaScript method for homework extraction (lesson ID: {lesson_id})")
+                # Call the JavaScript function directly
+                homework_content = await page.evaluate(f"glasirTimetable.extractHomeworkContent('{lesson_id}')")
+                
+                # If content is a string, clean up any HTML tags
+                if isinstance(homework_content, str):
+                    import re
+                    cleaned_content = re.sub(r'<[^>]*>', '', homework_content)
+                    return cleaned_content.strip()
+                
+                # If we got content, return it
+                if homework_content:
+                    return homework_content
+                
+                # If JS method returned null, fall back to UI method
+                print(f"JavaScript method returned no content, falling back to UI method (lesson ID: {lesson_id})")
+        except Exception as js_error:
+            print(f"JavaScript homework extraction failed: {js_error}, falling back to UI method")
+        
         # Find the speech bubble by its specific window ID
         selector = f'input[type="image"][src*="note.gif"][onclick*="{lesson_id}"]'
         
@@ -218,6 +243,11 @@ async def extract_timetable_data(page, teacher_map):
     first_date_obj = None
 
     rows = tbody.find_all('tr', recursive=False)
+    
+    # New: collect all lesson IDs with notes for parallel extraction
+    all_note_lessons = []
+    lesson_id_to_details = {}  # Map to find lesson details by ID
+    lesson_id_to_classes = {}  # Map to know which day and class index to update
 
     for row in rows:
         cells = row.find_all('td', recursive=False)
@@ -345,37 +375,10 @@ async def extract_timetable_data(page, teacher_map):
                         if lesson_id_match:
                             lesson_id = lesson_id_match.group(1)
                             
-                            # Extract homework content by clicking the speech bubble
-                            print(f"Extracting homework for {subject_code} (ID: {lesson_id}{'- cancelled' if is_cancelled else ''})")
-                            homework_content = await extract_homework_content(page, lesson_id)
-                            
-                            if homework_content:
-                                # Clean up the homework content (remove HTML tags if any)
-                                if isinstance(homework_content, str):
-                                    # Remove any HTML tags that might be in the content
-                                    cleaned_content = re.sub(r'<[^>]*>', '', homework_content)
-                                    lesson_details["Homework"] = cleaned_content.strip()
-                                    print(f"Assigned homework for {subject_code}: {cleaned_content.strip()}")
-                                else:
-                                    lesson_details["Homework"] = homework_content
-                                    print(f"Assigned homework for {subject_code}: {homework_content}")
-                            else:
-                                # If no homework was found, try one more time with a longer wait
-                                await page.wait_for_timeout(500)  # Increased waiting time
-                                homework_content = await extract_homework_content(page, lesson_id)
-                                if homework_content:
-                                    # Clean up the homework content (remove HTML tags if any)
-                                    if isinstance(homework_content, str):
-                                        # Remove any HTML tags that might be in the content
-                                        cleaned_content = re.sub(r'<[^>]*>', '', homework_content)
-                                        lesson_details["Homework"] = cleaned_content.strip()
-                                        print(f"Assigned homework for {subject_code} (retry): {cleaned_content.strip()}")
-                                    else:
-                                        lesson_details["Homework"] = homework_content
-                                        print(f"Assigned homework for {subject_code} (retry): {homework_content}")
-                                else:
-                                    print(f"No homework found for {subject_code} after retry")
-
+                            # Store for parallel processing instead of extracting now
+                            all_note_lessons.append(lesson_id)
+                            print(f"Found homework note for {subject_code} (ID: {lesson_id}{'- cancelled' if is_cancelled else ''})")
+                    
                     # Add exam-specific details if this is an exam
                     if code_parts and code_parts[0] == "Várroynd" and len(code_parts) > 2:
                         lesson_details["exam_subject"] = code_parts[1]
@@ -386,28 +389,123 @@ async def extract_timetable_data(page, teacher_map):
                     if day_en in day_classes:
                         # Check if this exact class already exists in the list
                         duplicate_found = False
-                        for existing_class in day_classes[day_en]:
+                        for i, existing_class in enumerate(day_classes[day_en]):
                             if (existing_class["name"] == lesson_details["name"] and
                                 existing_class["Time slot"] == lesson_details["Time slot"] and
                                 existing_class["Teacher short"] == lesson_details["Teacher short"]):
                                 
-                                # If duplicate found, make sure homework is preserved
-                                if "Homework" in lesson_details and "Homework" not in existing_class:
-                                    existing_class["Homework"] = lesson_details["Homework"]
-                                    print(f"Added homework to existing class: {subject_code}")
-                                    duplicate_found = True
-                                    break
-                                # If duplicate already has homework, keep it
-                                elif "Homework" in lesson_details and "Homework" in existing_class:
-                                    duplicate_found = True
-                                    break
+                                # If it has a note, store the mapping for later
+                                if note_img and lesson_id_match:
+                                    # For parallel homework processing
+                                    lesson_id = lesson_id_match.group(1)
+                                    lesson_id_to_details[lesson_id] = existing_class
+                                    lesson_id_to_classes[lesson_id] = (day_en, i)
+                                
+                                duplicate_found = True
+                                break
                         
-                        # Only add the class if it's not a duplicate or has unique information
+                        # Only add the class if it's not a duplicate
                         if not duplicate_found:
+                            class_index = len(day_classes[day_en])
                             day_classes[day_en].append(lesson_details)
+                            
+                            # If it has a note, store the mapping for later
+                            if note_img and lesson_id_match:
+                                # For parallel homework processing
+                                lesson_id = lesson_id_match.group(1)
+                                lesson_id_to_details[lesson_id] = lesson_details
+                                lesson_id_to_classes[lesson_id] = (day_en, class_index)
+                    else:
+                        # First class for this day
+                        day_classes[day_en] = [lesson_details]
+                        
+                        # If it has a note, store the mapping for later
+                        if note_img and lesson_id_match:
+                            # For parallel homework processing
+                            lesson_id = lesson_id_match.group(1)
+                            lesson_id_to_details[lesson_id] = lesson_details
+                            lesson_id_to_classes[lesson_id] = (day_en, 0)
 
             # Update column index for the next cell
             current_col_index += colspan
+            
+    # Now process all note lessons in parallel if JavaScript is available
+    if all_note_lessons:
+        try:
+            # Try to use parallel JavaScript extraction
+            js_available = await page.evaluate("typeof window.glasirTimetable === 'object' && typeof window.glasirTimetable.extractAllHomeworkContent === 'function'")
+            
+            if js_available:
+                # Import here to avoid circular imports
+                try:
+                    from scripts.js_integration import extract_all_homework_content_js
+                    
+                    # Use parallel extraction
+                    homework_map = await extract_all_homework_content_js(page, all_note_lessons)
+                    
+                    # Process the results
+                    print(f"Processing homework map with {len(homework_map)} entries")
+                    homework_count = 0
+                    for lesson_id, homework_content in homework_map.items():
+                        if homework_content:
+                            lesson_details = lesson_id_to_details.get(lesson_id)
+                            if lesson_details:
+                                lesson_details["Homework"] = homework_content
+                                print(f"Assigned homework for {lesson_details['name']}: {homework_content[:30]}...")
+                                homework_count += 1
+                            else:
+                                print(f"Warning: Found homework content but no lesson details for ID {lesson_id}")
+                    
+                    print(f"Successfully assigned {homework_count} homework entries to lessons")
+
+                    # Debug which lessons have homework content now
+                    day_homework_count = 0
+                    for day, classes in day_classes.items():
+                        for class_info in classes:
+                            if "Homework" in class_info:
+                                print(f"Lesson with homework: {day} - {class_info['name']} ({class_info['Time slot']})")
+                                day_homework_count += 1
+                    
+                    if day_homework_count != homework_count:
+                        print(f"Warning: Mismatch between assigned homework ({homework_count}) and classes with homework ({day_homework_count})")
+                        
+                    # Additional check for the location where lesson_id_to_classes maps to day_classes
+                    for lesson_id, (day, index) in lesson_id_to_classes.items():
+                        if lesson_id in homework_map and homework_map[lesson_id]:
+                            try:
+                                if index < len(day_classes[day]):
+                                    class_info = day_classes[day][index]
+                                    if "Homework" not in class_info:
+                                        print(f"Warning: Lesson {day_classes[day][index]['name']} should have homework but doesn't")
+                                        # Force add it
+                                        day_classes[day][index]["Homework"] = homework_map[lesson_id]
+                                        print(f"Manually added homework to {day_classes[day][index]['name']}")
+                            except Exception as e:
+                                print(f"Error checking lesson {lesson_id} ({day}, {index}): {e}")
+                except ImportError:
+                    print("Could not import extract_all_homework_content_js, falling back to sequential extraction")
+                    js_available = False
+                except Exception as js_error:
+                    print(f"Error in parallel homework extraction: {js_error}")
+                    js_available = False
+            
+            # If parallel extraction failed or isn't available, fall back to sequential extraction
+            if not js_available:
+                print("Using sequential homework extraction")
+                for lesson_id in all_note_lessons:
+                    lesson_details = lesson_id_to_details.get(lesson_id)
+                    if lesson_details:
+                        print(f"Extracting homework for {lesson_details['name']} (ID: {lesson_id})")
+                        
+                        # Extract homework content by clicking the speech bubble
+                        homework_content = await extract_homework_content(page, lesson_id)
+                        
+                        if homework_content:
+                            lesson_details["Homework"] = homework_content
+                            print(f"Assigned homework for {lesson_details['name']}: {homework_content}")
+        except Exception as e:
+            print(f"Error processing notes: {e}")
+            # Continue with the rest of the processing despite note errors
 
     # Sort classes for each day by time slot and prioritize uncancelled classes
     for day, classes in day_classes.items():
