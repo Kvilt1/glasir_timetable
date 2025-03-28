@@ -63,6 +63,14 @@ from glasir_timetable.utils.error_utils import (
     async_resource_cleanup_context
 )
 
+# Import navigation utilities
+from glasir_timetable.navigation import (
+    process_weeks,
+    process_single_week,
+    navigate_and_extract,
+    get_week_directions
+)
+
 def is_new_format(timetable_data):
     """
     Check if the timetable data is in the new format.
@@ -234,99 +242,22 @@ async def main():
                 # Store processed weeks to avoid duplicates
                 processed_weeks = {week_info['week_num']}
                 
-                # Process backward weeks if requested
-                for i in range(1, args.weekbackward + 1):
-                    logger.info(f"Processing week backward {i}...")
+                # Process additional weeks if requested (forward and backward)
+                if args.weekforward > 0 or args.weekbackward > 0:
+                    logger.info(f"Processing additional weeks: {args.weekbackward} backward, {args.weekforward} forward")
                     
-                    async with error_screenshot_context(page, f"backward_week_{i}", "navigation_errors"):
-                        try:
-                            # Navigate using JavaScript
-                            week_info = await navigate_to_week_js(page, -i, student_id)
-                            
-                            # Skip if navigation failed or we've already processed this week
-                            if not week_info or week_info.get('weekNumber') in processed_weeks:
-                                logger.info(f"Week navigation failed or already processed, skipping.")
-                                # Return to baseline
-                                await return_to_baseline_js(page, 0, student_id)
-                                continue
-                                
-                            # Extract timetable data
-                            timetable_data, week_details = await extract_timetable_data(page, teacher_map)
-                            
-                            # Get standardized week information
-                            week_num = week_info.get('weekNumber')
-                            year = week_info.get('year')
-                            start_date = week_info.get('startDate')
-                            end_date = week_info.get('endDate')
-                            
-                            # Mark as processed
-                            processed_weeks.add(week_num)
-                            
-                            # Normalize dates and week number
-                            start_date, end_date = normalize_dates(start_date, end_date, year)
-                            week_num = normalize_week_number(week_num)
-                            
-                            # Generate filename
-                            filename = generate_week_filename(year, week_num, start_date, end_date)
-                            output_path = os.path.join(args.output_dir, filename)
-                            
-                            # Save data to JSON file
-                            save_json_data(timetable_data, output_path)
-                            
-                            logger.info(f"Timetable data for Week {week_num} saved to {output_path}")
-                        finally:
-                            # Always try to return to baseline, even if there was an error
-                            try:
-                                await return_to_baseline_js(page, 0, student_id)
-                            except Exception as e:
-                                logger.error(f"Error returning to baseline: {e}")
-                        
-                # Process forward weeks if requested
-                for i in range(1, args.weekforward + 1):
-                    logger.info(f"Processing week forward {i}...")
+                    # Get the list of week directions to process
+                    directions = await get_week_directions(args)
                     
-                    async with error_screenshot_context(page, f"forward_week_{i}", "navigation_errors"):
-                        try:
-                            # Navigate using JavaScript
-                            week_info = await navigate_to_week_js(page, i, student_id)
-                            
-                            # Skip if navigation failed or we've already processed this week
-                            if not week_info or week_info.get('weekNumber') in processed_weeks:
-                                logger.info(f"Week navigation failed or already processed, skipping.")
-                                # Return to baseline
-                                await return_to_baseline_js(page, 0, student_id)
-                                continue
-                            
-                            # Extract timetable data
-                            timetable_data, week_details = await extract_timetable_data(page, teacher_map)
-                            
-                            # Get standardized week information
-                            week_num = week_info.get('weekNumber')
-                            year = week_info.get('year')
-                            start_date = week_info.get('startDate')
-                            end_date = week_info.get('endDate')
-                            
-                            # Mark as processed
-                            processed_weeks.add(week_num)
-                            
-                            # Normalize dates and week number
-                            start_date, end_date = normalize_dates(start_date, end_date, year)
-                            week_num = normalize_week_number(week_num)
-                            
-                            # Generate filename
-                            filename = generate_week_filename(year, week_num, start_date, end_date)
-                            output_path = os.path.join(args.output_dir, filename)
-                            
-                            # Save data to JSON file
-                            save_json_data(timetable_data, output_path)
-                            
-                            logger.info(f"Timetable data for Week {week_num} saved to {output_path}")
-                        finally:
-                            # Always try to return to baseline, even if there was an error
-                            try:
-                                await return_to_baseline_js(page, 0, student_id)
-                            except Exception as e:
-                                logger.error(f"Error returning to baseline: {e}")
+                    # Process all weeks in the specified directions
+                    await process_weeks(
+                        page=page,
+                        directions=directions,
+                        teacher_map=teacher_map,
+                        student_id=student_id,
+                        output_dir=args.output_dir,
+                        processed_weeks=processed_weeks
+                    )
 
             # Print summary of errors
             error_summary = get_error_summary()

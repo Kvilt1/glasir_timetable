@@ -26,6 +26,7 @@ from glasir_timetable.js_navigation.js_integration import (
     JavaScriptIntegrationError
 )
 from glasir_timetable.extractors import extract_timetable_data
+from glasir_timetable.navigation import with_week_navigation, navigate_and_extract
 
 async def export_all_weeks(
     page, 
@@ -114,7 +115,7 @@ async def export_all_weeks(
             
         logger.info(f"Found {len(all_weeks)} weeks using JavaScript")
     except Exception as e:
-        logger.error(f"Error getting all weeks: {str(e)}")
+        logger.error(f"Failed to get all weeks: {str(e)}")
         return results
     
     # Update statistics
@@ -134,74 +135,71 @@ async def export_all_weeks(
             # Skip based on v_value instead of week_num
             v_value = week.get('v')
             if v_value is None:
-                logger.warning(f"No v-value for week {week.get('weekNum')}, skipping")
-                pbar.update(1)
                 results["skipped"] += 1
+                pbar.update(1)
                 continue
                 
-            # Skip if already processed using v_value
             if v_value in processed_v_values:
-                pbar.update(1)
                 results["skipped"] += 1
-                logger.debug(f"Skipping already processed week with v_value={v_value}")
+                pbar.update(1)
                 continue
             
-            week_num = week.get('weekNum')
+            # Get week info
+            week_num = week.get('weekNum', 0)
             academic_year = week.get('academicYear', 0)
             
             pbar.set_description(f"Week {week_num} (v={v_value}, year={academic_year})")
             
             try:
-                # Navigate to the week using JavaScript
-                week_info = await navigate_to_week_js(page, v_value, student_id)
-                
-                # Skip if navigation failed
-                if not week_info:
-                    error_msg = f"Failed to navigate to week {week_num} (v={v_value})"
-                    results["errors"].append({"week": week_num, "error": error_msg})
-                    logger.error(error_msg)
-                    pbar.update(1)
-                    continue
-                
-                # Extract timetable data
-                timetable_data, week_details = await extract_timetable_data(page, teacher_map)
-                
-                # Get standardized week information
-                year = week_info.get('year', datetime.now().year)
-                start_date = week_info.get('startDate')
-                end_date = week_info.get('endDate')
-                
-                # Normalize and validate dates
-                start_date, end_date = normalize_dates(start_date, end_date, year)
-                
-                # Normalize week number
-                normalized_week_num = normalize_week_number(week_num)
-                
-                # Generate filename
-                filename = generate_week_filename(year, normalized_week_num, start_date, end_date)
-                output_path = os.path.join(output_dir, filename)
-                
-                # Save data to JSON file
-                save_json_data(timetable_data, output_path)
-                
-                # Mark as processed using v_value instead of week_num
-                processed_v_values.add(v_value)
-                results["processed_weeks"] += 1
-                update_stats("processed_weeks")
-                
-                # Calculate and display statistics
-                elapsed = time.time() - start_time
-                items_per_min = 60 * results["processed_weeks"] / elapsed if elapsed > 0 else 0
-                remaining = (len(all_weeks) - pbar.n) / items_per_min * 60 if items_per_min > 0 else 0
-                
-                pbar.set_postfix({
-                    "success": results["processed_weeks"], 
-                    "rate": f"{items_per_min:.1f}/min",
-                    "ETA": f"{remaining:.1f}m"
-                })
-                
-                # Log success
-                logger.debug(f"Timetable data for Week {normalized_week_num} saved to {output_path}")
+                # Use the with_week_navigation context manager for safer navigation
+                async with with_week_navigation(page, v_value, student_id) as week_info:
+                    # Skip if navigation failed
+                    if not week_info:
+                        error_msg = f"Failed to navigate to week {week_num} (v={v_value})"
+                        results["errors"].append({"week": week_num, "error": error_msg})
+                        logger.error(error_msg)
+                        pbar.update(1)
+                        continue
+                    
+                    # Extract timetable data
+                    timetable_data, week_details = await extract_timetable_data(page, teacher_map)
+                    
+                    # Get standardized week information
+                    year = week_info.get('year', datetime.now().year)
+                    start_date = week_info.get('startDate')
+                    end_date = week_info.get('endDate')
+                    
+                    # Normalize and validate dates
+                    start_date, end_date = normalize_dates(start_date, end_date, year)
+                    
+                    # Normalize week number
+                    normalized_week_num = normalize_week_number(week_num)
+                    
+                    # Generate filename
+                    filename = generate_week_filename(year, normalized_week_num, start_date, end_date)
+                    output_path = os.path.join(output_dir, filename)
+                    
+                    # Save data to JSON file
+                    save_json_data(timetable_data, output_path)
+                    
+                    # Mark as processed using v_value instead of week_num
+                    processed_v_values.add(v_value)
+                    results["processed_weeks"] += 1
+                    update_stats("processed_weeks")
+                    
+                    # Calculate and display statistics
+                    elapsed = time.time() - start_time
+                    items_per_min = 60 * results["processed_weeks"] / elapsed if elapsed > 0 else 0
+                    remaining = (len(all_weeks) - pbar.n) / items_per_min * 60 if items_per_min > 0 else 0
+                    
+                    pbar.set_postfix({
+                        "success": results["processed_weeks"], 
+                        "rate": f"{items_per_min:.1f}/min",
+                        "ETA": f"{remaining:.1f}m"
+                    })
+                    
+                    # Log success
+                    logger.debug(f"Timetable data for Week {normalized_week_num} saved to {output_path}")
             
             except Exception as e:
                 # Handle errors
@@ -217,12 +215,6 @@ async def export_all_weeks(
                     logger.error(f"Failed to take error screenshot: {str(screenshot_error)}")
             
             finally:
-                # Return to baseline
-                try:
-                    await return_to_baseline_js(page, 0, student_id)
-                except Exception as e:
-                    logger.error(f"Error returning to baseline: {str(e)}")
-                
                 # Wait between requests
                 await asyncio.sleep(0.2)  # Short delay for JS-based navigation
                 
