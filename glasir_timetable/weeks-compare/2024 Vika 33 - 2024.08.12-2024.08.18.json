@@ -1,0 +1,109 @@
+{
+  "studentInfo": {
+    "studentName": "Rókur Kvilt Meitilberg",
+    "class": "22y"
+  },
+  "events": [
+    {
+      "title": "mik",
+      "level": "C",
+      "year": "2024-2025",
+      "date": "2024-08-15",
+      "day": "Thursday",
+      "teacher": "Jan Berg Jørgensen",
+      "teacherShort": "JBJ",
+      "location": "405",
+      "timeSlot": "1",
+      "startTime": "08:10",
+      "endTime": "09:40",
+      "timeRange": "08:10-09:40",
+      "cancelled": false
+    },
+    {
+      "title": "stø",
+      "level": "A",
+      "year": "2024-2025",
+      "date": "2024-08-15",
+      "day": "Thursday",
+      "teacher": "Pætur Eysturskarð",
+      "teacherShort": "PEY",
+      "location": "611",
+      "timeSlot": "2",
+      "startTime": "10:05",
+      "endTime": "11:35",
+      "timeRange": "10:05-11:35",
+      "cancelled": false
+    },
+    {
+      "title": "før",
+      "level": "A",
+      "year": "2024-2025",
+      "date": "2024-08-15",
+      "day": "Thursday",
+      "teacher": "Tina Kildegaard Jakobsen",
+      "teacherShort": "TJA",
+      "location": "606",
+      "timeSlot": "3",
+      "startTime": "12:10",
+      "endTime": "13:40",
+      "timeRange": "12:10-13:40",
+      "cancelled": false,
+      "description": "Tit skulu brúka Sýni og Dýpi 3 í ár. \nIkki neyðugt at taka hana við í dag."
+    },
+    {
+      "title": "evf",
+      "level": "A",
+      "year": "2024-2025",
+      "date": "2024-08-16",
+      "day": "Friday",
+      "teacher": "Brynjálvur I. Johansen",
+      "teacherShort": "BIJ",
+      "location": "608",
+      "timeSlot": "2",
+      "startTime": "10:05",
+      "endTime": "11:35",
+      "timeRange": "10:05-11:35",
+      "cancelled": false,
+      "description": "Havi kemi B bókina við. Vit fara at hyggja eftir avsnittinum um isomeri."
+    },
+    {
+      "title": "alf",
+      "level": "A",
+      "year": "2024-2025",
+      "date": "2024-08-16",
+      "day": "Friday",
+      "teacher": "Henriette Svenstrup",
+      "teacherShort": "HSV",
+      "location": "615",
+      "timeSlot": "3",
+      "startTime": "12:10",
+      "endTime": "13:40",
+      "timeRange": "12:10-13:40",
+      "cancelled": false,
+      "description": "hey\ntakið bæði AB 1 og AB2 bókin við, tit skulu rokna uppgávur, og eg vænti attit hava gloymd onkran formil :-)"
+    },
+    {
+      "title": "søg",
+      "level": "A",
+      "year": "2024-2025",
+      "date": "2024-08-16",
+      "day": "Friday",
+      "teacher": "EGJ",
+      "teacherShort": "EGJ",
+      "location": "764",
+      "timeSlot": "4",
+      "startTime": "13:55",
+      "endTime": "15:25",
+      "timeRange": "13:55-15:25",
+      "cancelled": false
+    }
+  ],
+  "weekInfo": {
+    "year": 2024,
+    "week_num": 33,
+    "start_date": "2024.08.12",
+    "end_date": "2024.08.18",
+    "week_key": "Week 33: 2024.08.12 to 2024.08.18"
+  },
+  "formatVersion": 2
+}

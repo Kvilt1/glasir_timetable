@@ -12,7 +12,12 @@ from tqdm import tqdm
 from datetime import datetime
 
 from glasir_timetable import logger, update_stats, add_error
-from glasir_timetable.utils import normalize_dates, normalize_week_number, generate_week_filename
+from glasir_timetable.utils import (
+    normalize_dates, 
+    normalize_week_number, 
+    generate_week_filename,
+    save_json_data
+)
 from glasir_timetable.js_navigation.js_integration import (
     get_student_id,
     navigate_to_week_js,
@@ -177,8 +182,7 @@ async def export_all_weeks(
                 output_path = os.path.join(output_dir, filename)
                 
                 # Save data to JSON file
-                with open(output_path, 'w', encoding='utf-8') as f:
-                    json.dump(timetable_data, f, ensure_ascii=False, indent=2)
+                save_json_data(timetable_data, output_path)
                 
                 # Mark as processed using v_value instead of week_num
                 processed_v_values.add(v_value)

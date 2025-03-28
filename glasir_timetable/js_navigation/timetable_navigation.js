@@ -14,6 +14,51 @@ window.glasirTimetable = window.glasirTimetable || {
   // Set debug level: 0=none, 1=warnings, 2=info, 3=debug
   debugLevel: 1,
   
+  // Cache for storing frequently accessed data
+  _cache: {
+    weekInfo: null,
+    studentId: null,
+    allWeeks: null,
+    domQueries: {},  // Map of query selector to element references
+    homeworkContent: {}  // Map of lesson ID to homework content
+  },
+  
+  /**
+   * Clear all cache entries
+   */
+  clearCache: function() {
+    this._cache.weekInfo = null;
+    this._cache.studentId = null;
+    this._cache.allWeeks = null;
+    this._cache.domQueries = {};
+    this._cache.homeworkContent = {};
+    console.log("Cache cleared");
+  },
+  
+  /**
+   * Clear specific cache entry or category
+   * 
+   * @param {string} cacheType - Type of cache to clear: 'weekInfo', 'studentId', 
+   *                            'allWeeks', 'domQueries', 'homeworkContent', or 'all'
+   */
+  clearCacheType: function(cacheType) {
+    if (!cacheType || cacheType === 'all') {
+      this.clearCache();
+      return;
+    }
+    
+    if (cacheType in this._cache) {
+      if (typeof this._cache[cacheType] === 'object' && !Array.isArray(this._cache[cacheType])) {
+        this._cache[cacheType] = {};
+      } else {
+        this._cache[cacheType] = null;
+      }
+      console.log(`Cache '${cacheType}' cleared`);
+    } else {
+      console.warn(`Unknown cache type: ${cacheType}`);
+    }
+  },
+  
   // Add more configuration options here as needed
 };
 
@@ -53,6 +98,9 @@ function navigateToWeek(weekOffset, studentId) {
         return;
       }
       
+      // Clear week info cache on navigation
+      glasirTimetable._cache.weekInfo = null;
+      
       // Execute the navigation
       MyUpdate('/i/udvalg.asp', `stude&id=${studentId}&v=${weekOffset}`, 'MyWindowMain');
       
@@ -80,6 +128,11 @@ function navigateToWeek(weekOffset, studentId) {
  */
 function extractWeekInfo() {
   try {
+    // Check if we have cached week info
+    if (glasirTimetable._cache.weekInfo) {
+      return glasirTimetable._cache.weekInfo;
+    }
+    
     // Get the week information
     const bodyText = document.body.innerText;
     
@@ -147,12 +200,18 @@ function extractWeekInfo() {
     // Get year from the date if available, otherwise current year
     const year = startDate ? parseInt(startDate.match(/\d{4}/)[0]) : new Date().getFullYear();
     
-    return {
+    // Create week info object
+    const weekInfo = {
       weekNumber,
       year,
       startDate: formattedStartDate,
       endDate: formattedEndDate
     };
+    
+    // Cache the result
+    glasirTimetable._cache.weekInfo = weekInfo;
+    
+    return weekInfo;
   } catch (error) {
     throw new Error(`Failed to extract week info: ${error.message}`);
   }
@@ -170,7 +229,16 @@ function extractTimetableData() {
     
     // Extract classes from the timetable
     const classes = [];
-    const classLinks = document.querySelectorAll('a[onclick*="group&v=0&id="]');
+    
+    // Use cached DOM query if available, otherwise perform the query and cache it
+    let classLinks;
+    const querySelector = 'a[onclick*="group&v=0&id="]';
+    if (glasirTimetable._cache.domQueries[querySelector]) {
+      classLinks = glasirTimetable._cache.domQueries[querySelector];
+    } else {
+      classLinks = document.querySelectorAll(querySelector);
+      glasirTimetable._cache.domQueries[querySelector] = classLinks;
+    }
     
     if (classLinks.length === 0) {
       console.warn("No class links found in the timetable");
@@ -185,8 +253,28 @@ function extractTimetableData() {
           return;
         }
         
-        const teacherLink = cell.querySelector('a[onclick*="teach&v=0&id="]');
-        const roomLink = cell.querySelector('a[onclick*="room_&v=0&id="]');
+        // Cache common query selectors for this cell
+        const teacherSelector = 'a[onclick*="teach&v=0&id="]';
+        const roomSelector = 'a[onclick*="room_&v=0&id="]';
+        
+        // Use cached results for common queries if available
+        let teacherLink, roomLink;
+        
+        const cellCacheKey = `${teacherSelector}-${cell.innerHTML.length}`;
+        if (glasirTimetable._cache.domQueries[cellCacheKey]) {
+          teacherLink = glasirTimetable._cache.domQueries[cellCacheKey];
+        } else {
+          teacherLink = cell.querySelector(teacherSelector);
+          glasirTimetable._cache.domQueries[cellCacheKey] = teacherLink;
+        }
+        
+        const roomCacheKey = `${roomSelector}-${cell.innerHTML.length}`;
+        if (glasirTimetable._cache.domQueries[roomCacheKey]) {
+          roomLink = glasirTimetable._cache.domQueries[roomCacheKey];
+        } else {
+          roomLink = cell.querySelector(roomSelector);
+          glasirTimetable._cache.domQueries[roomCacheKey] = roomLink;
+        }
         
         // Try to determine the day and time from the table structure
         const dayIndex = getDayIndex(cell);
@@ -300,13 +388,20 @@ function getTeacherFullName(initials) {
  */
 function getStudentId() {
   try {
+    // Check cache first
+    if (glasirTimetable._cache.studentId) {
+      return glasirTimetable._cache.studentId;
+    }
+    
     // Look for student ID in links on the page
     const studentLinks = document.querySelectorAll('a[onclick*="stude&id="]');
     for (const link of studentLinks) {
       const onclick = link.getAttribute('onclick') || '';
       const idMatch = onclick.match(/stude&id=([^&]+)/);
       if (idMatch && idMatch[1]) {
-        return idMatch[1];
+        // Store in cache before returning
+        glasirTimetable._cache.studentId = idMatch[1];
+        return glasirTimetable._cache.studentId;
       }
     }
     
@@ -314,7 +409,9 @@ function getStudentId() {
     const urlParams = new URLSearchParams(window.location.search);
     const idParam = urlParams.get('id');
     if (idParam) {
-      return idParam;
+      // Store in cache before returning
+      glasirTimetable._cache.studentId = idParam;
+      return glasirTimetable._cache.studentId;
     }
     
     console.warn("Could not find student ID in the page");
@@ -333,10 +430,26 @@ function getStudentId() {
  */
 function extractHomeworkContent(lessonId) {
   try {
+    // Check cache first
+    if (glasirTimetable._cache.homeworkContent[lessonId]) {
+      console.log(`Using cached homework content for lesson ${lessonId}`);
+      return glasirTimetable._cache.homeworkContent[lessonId];
+    }
+    
     console.log(`Extracting homework for lesson ${lessonId} directly...`);
     
     // Find the note button
-    const noteButton = document.querySelector(`input[type="image"][src*="note.gif"][onclick*="${lessonId}"]`);
+    const noteButtonSelector = `input[type="image"][src*="note.gif"][onclick*="${lessonId}"]`;
+    let noteButton;
+    
+    // Check if selector is already cached
+    if (glasirTimetable._cache.domQueries[noteButtonSelector]) {
+      noteButton = glasirTimetable._cache.domQueries[noteButtonSelector];
+    } else {
+      noteButton = document.querySelector(noteButtonSelector);
+      glasirTimetable._cache.domQueries[noteButtonSelector] = noteButton;
+    }
+    
     if (!noteButton) {
       console.warn(`Note button for lesson ${lessonId} not found`);
       return "Homework note button not found";
@@ -445,58 +558,22 @@ function extractHomeworkContent(lessonId) {
       const tempDiv = document.createElement('div');
       tempDiv.innerHTML = homeworkContent;
       
-      // Strategy 1: Look for a textarea with the note content
-      const noteTextArea = tempDiv.querySelector('textarea[name="NoteText"]');
-      if (noteTextArea) {
-        console.log(`Found homework in textarea: ${noteTextArea.value ? noteTextArea.value.substring(0, 30) : "empty"}`);
-        if (noteTextArea.value && noteTextArea.value.trim().length > 0) {
-          return noteTextArea.value;
-        }
-      }
+      // Extract and clean the homework text
+      let homework = tempDiv.innerText || tempDiv.textContent || "Empty response";
+      homework = homework.trim();
       
-      // Strategy 2: Look for the text displayed in the form
-      const notesTable = tempDiv.querySelector('table.Notes');
-      if (notesTable) {
-        const noteText = notesTable.textContent.trim();
-        if (noteText.length > 0) {
-          console.log(`Found homework in notes table: ${noteText.substring(0, 30)}...`);
-          return noteText;
-        }
-      }
+      // Remove Heimaarbeiði prefix that appears at the beginning
+      homework = homework.replace(/^Heimaarbeiði\s*/i, '');
       
-      // Strategy 3: Look for paragraphs with "Heimaarbeiði"
-      const paragraphs = tempDiv.querySelectorAll('p');
-      for (const para of paragraphs) {
-        if (para.textContent.includes('Heimaarbeiði') || para.innerHTML.includes('Heimaarbeiði')) {
-          // For paragraphs with Heimaarbeiði, the content usually comes after a <br>
-          if (para.innerHTML.includes('<br>')) {
-            const parts = para.innerHTML.split('<br>');
-            const content = parts.slice(1).join('<br>').trim();
-            console.log(`Found homework after Heimaarbeiði <br>: ${content.substring(0, 30)}...`);
-            return content;
-          } else {
-            const content = para.textContent.replace('Heimaarbeiði', '').trim();
-            console.log(`Found homework in Heimaarbeiði paragraph: ${content.substring(0, 30)}...`);
-            return content;
-          }
-        }
-      }
+      // Cache the result before returning
+      glasirTimetable._cache.homeworkContent[lessonId] = homework;
       
-      // Strategy 4: Get any substantial text
-      const allText = tempDiv.textContent.trim();
-      if (allText.length > 20) {
-        console.log(`Found text content: ${allText.substring(0, 30)}...`);
-        return allText;
-      }
-      
-      // Strategy 5: Return the raw HTML as a last resort
-      console.log(`No structured content found, returning raw HTML (sanitized)`);
-      return homeworkContent.replace(/<[^>]*>/g, ' ').trim() || "No content found in response";
+      return homework;
+    } else {
+      return "Failed to retrieve homework content";
     }
-    
-    return "Failed to retrieve homework content";
   } catch (error) {
-    console.error(`Error extracting homework for ${lessonId}: ${error.message}`);
+    console.warn(`Error extracting homework: ${error.message}`);
     return `Error: ${error.message}`;
   }
 }
@@ -559,6 +636,12 @@ function extractAllHomeworkContent(lessonIds) {
  */
 function getAllWeeks() {
     try {
+        // Return cached result if available
+        if (glasirTimetable._cache.allWeeks) {
+            console.log("Using cached weeks data");
+            return glasirTimetable._cache.allWeeks;
+        }
+        
         // Find all week buttons
         const buttons = Array.from(document.querySelectorAll('.UgeKnap, .UgeKnapValgt'));
         console.log("Found week buttons:", buttons.length);
@@ -711,27 +794,31 @@ function getAllWeeks() {
                     } else if (secondHalfMonths.includes(week.month)) {
                         // Second half (Jan-Jul): Year X-1/X
                         week.academicYearText = `${currentYear - 1}/${currentYear}`;
-                    } else {
-                        week.academicYearText = `Year ${week.academicYear}`;
                     }
                 } else {
-                    week.academicYearText = `Year ${week.academicYear}`;
+                    week.academicYearText = `${currentYear}/${currentYear + 1}`;
                 }
             });
             
+            // Remember this row for next iteration
             previousRow = currentRow;
         });
         
-        console.log("Finished processing weeks, found:", weeks.length);
-        return weeks;
+        // Sort all weeks by their offset (v) value
+        const sortedWeeks = weeks.sort((a, b) => a.v - b.v);
+        
+        // Store in cache
+        glasirTimetable._cache.allWeeks = sortedWeeks;
+        
+        return sortedWeeks;
     } catch (error) {
-        console.error("Error getting all weeks:", error);
+        console.warn(`Failed to get all weeks: ${error.message}`);
         return [];
     }
 }
 
 // Export functions to make them available to the page context
-window.glasirTimetable = {
+window.glasirTimetable = Object.assign(window.glasirTimetable || {}, {
   checkMyUpdateExists,
   navigateToWeek,
   extractTimetableData,
@@ -740,4 +827,4 @@ window.glasirTimetable = {
   extractHomeworkContent,
   extractAllHomeworkContent,
   getAllWeeks
-}; 
+}); 

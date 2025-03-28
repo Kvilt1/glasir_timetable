@@ -8,7 +8,6 @@ This JavaScript navigation implementation consists of:
 
 1. **timetable_navigation.js**: Core JavaScript functions for navigating and extracting timetable data
 2. **js_integration.py**: Python module that injects the JavaScript and provides an interface for the main application
-3. **main_js.py**: Modified main script that uses the JavaScript-based navigation
 
 ## Key Advantages
 
@@ -33,10 +32,10 @@ Run the JavaScript-based implementation using the `run_js_timetable.py` script:
 python3 run_js_timetable.py --credentials-file credentials.json --weekforward 2 --weekbackward 2
 ```
 
-Or run the modified main script directly:
+Or run the main application which now fully incorporates JavaScript navigation:
 
 ```bash
-python3 -m scripts.main_js --credentials-file credentials.json --weekforward 2 --weekbackward 2
+python3 -m glasir_timetable.main --credentials-file credentials.json --weekforward 2 --weekbackward 2
 ```
 
 ### Testing the JavaScript Integration

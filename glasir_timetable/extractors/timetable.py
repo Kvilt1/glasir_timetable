@@ -771,24 +771,11 @@ async def extract_timetable_data(page, teacher_map):
         "class": student_info.get("class")
     }
     
-    # Create the final structure with both formats for backward compatibility
-    # 1. Traditional format (for compatibility)
-    traditional_format = {
-        week_info["week_key"]: day_classes,
-        "student_info": student_info
-    }
-    
-    # 2. New event-centric format
-    event_centric_format = {
+    # Create the event-centric format only (removing traditional format)
+    timetable_data = {
         "studentInfo": student_info,
         "events": all_events,
-        "weekInfo": week_info
-    }
-    
-    # Merge both formats for backward compatibility during transition
-    timetable_data = {
-        "traditional": traditional_format,
-        "eventCentric": event_centric_format,
+        "weekInfo": week_info,
         # Add a flag to indicate this is the new format
         "formatVersion": 2
     }

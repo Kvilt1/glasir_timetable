@@ -1,0 +1,15 @@
+{
+  "studentInfo": {
+    "studentName": "Rókur Kvilt Meitilberg",
+    "class": "22y"
+  },
+  "events": [],
+  "weekInfo": {
+    "year": 2024,
+    "week_num": 52,
+    "start_date": "2024.12.23",
+    "end_date": "2024.12.29",
+    "week_key": "Week 52: 2024.12.23 to 2024.12.29"
+  },
+  "formatVersion": 2
+}

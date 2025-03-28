@@ -11,14 +11,54 @@ import time
 import re
 import asyncio
 import logging
-from glasir_timetable import logger
+from glasir_timetable import logger, add_error
+from glasir_timetable.utils.error_utils import (
+    evaluate_js_safely,
+    error_screenshot_context,
+    register_console_listener,
+    unregister_console_listener,
+    handle_errors,
+    JavaScriptError
+)
 
-# Track if console listener is already attached
-_console_listener_attached = False
+# JavaScript content cache
+_JS_CACHE = None
 
 class JavaScriptIntegrationError(Exception):
     """Exception raised for errors in JavaScript integration."""
     pass
+
+@handle_errors(error_category="javascript_errors", error_class=JavaScriptIntegrationError)
+def get_timetable_script():
+    """
+    Get the timetable navigation JavaScript content.
+    Uses caching to avoid reading the file on every call.
+    
+    Returns:
+        str: The JavaScript code
+        
+    Raises:
+        JavaScriptIntegrationError: If the JavaScript file could not be read
+    """
+    global _JS_CACHE
+    
+    # Return cached content if available
+    if _JS_CACHE is not None:
+        return _JS_CACHE
+    
+    # Get the path to the JavaScript file
+    script_path = Path(__file__).parent / "timetable_navigation.js"
+    
+    # Check if the file exists
+    if not script_path.exists():
+        raise JavaScriptIntegrationError(f"JavaScript file not found at {script_path}")
+    
+    # Read the JavaScript code and cache it
+    with open(script_path, "r") as f:
+        _JS_CACHE = f.read()
+    
+    logger.info("JavaScript file loaded and cached")
+    return _JS_CACHE
 
 async def inject_timetable_script(page):
     """
@@ -30,30 +70,32 @@ async def inject_timetable_script(page):
     Raises:
         JavaScriptIntegrationError: If the script could not be injected or evaluated
     """
-    try:
-        # Get the path to the JavaScript file
-        script_path = Path(__file__).parent / "timetable_navigation.js"
-        
-        # Check if the file exists
-        if not script_path.exists():
-            raise JavaScriptIntegrationError(f"JavaScript file not found at {script_path}")
-        
-        # Read the JavaScript code
-        with open(script_path, "r") as f:
-            js_code = f.read()
+    async with error_screenshot_context(page, "inject_script", "javascript_errors"):
+        # Get the JavaScript code from cache
+        js_code = get_timetable_script()
         
         # Inject the script into the page
-        await page.evaluate(js_code)
+        await evaluate_js_safely(
+            page, 
+            js_code, 
+            error_message="Failed to inject JavaScript navigation script"
+        )
         logger.info("JavaScript navigation script injected")
         
         # Verify that the script was properly injected by checking the glasirTimetable object
-        check_result = await page.evaluate("typeof window.glasirTimetable === 'object'")
+        check_result = await evaluate_js_safely(
+            page,
+            "typeof window.glasirTimetable === 'object'",
+            error_message="Failed to verify JavaScript integration"
+        )
+        
         if not check_result:
             raise JavaScriptIntegrationError("JavaScript integration failed - glasirTimetable object not found")
         
+        # Ensure console listener is attached
+        register_console_listener(page)
+        
         logger.info("JavaScript integration verified")
-    except Exception as e:
-        raise JavaScriptIntegrationError(f"Failed to inject JavaScript: {str(e)}")
 
 async def verify_myupdate_function(page):
     """
@@ -68,17 +110,20 @@ async def verify_myupdate_function(page):
     Raises:
         JavaScriptIntegrationError: If the verification fails
     """
-    try:
+    async with error_screenshot_context(page, "verify_myupdate", "javascript_errors"):
         # Check if the MyUpdate function exists using our injected function
-        exists = await page.evaluate("glasirTimetable.checkMyUpdateExists()")
+        exists = await evaluate_js_safely(
+            page,
+            "glasirTimetable.checkMyUpdateExists()",
+            error_message="Failed to verify MyUpdate function"
+        )
+        
         if exists:
             logger.info("MyUpdate function verified and available")
             return True
         else:
             logger.warning("WARNING: MyUpdate function not found on the page!")
             return False
-    except Exception as e:
-        raise JavaScriptIntegrationError(f"Failed to verify MyUpdate function: {str(e)}")
 
 async def get_student_id(page):
     """
@@ -93,8 +138,13 @@ async def get_student_id(page):
     Raises:
         JavaScriptIntegrationError: If the student ID could not be extracted
     """
-    try:
-        student_id = await page.evaluate("glasirTimetable.getStudentId()")
+    async with error_screenshot_context(page, "get_student_id", "javascript_errors"):
+        student_id = await evaluate_js_safely(
+            page,
+            "glasirTimetable.getStudentId()",
+            error_message="Could not extract student ID from the page"
+        )
+        
         if not student_id:
             raise JavaScriptIntegrationError("Could not extract student ID from the page")
         
@@ -104,8 +154,6 @@ async def get_student_id(page):
         
         logger.info(f"Found student ID: {student_id}")
         return student_id
-    except Exception as e:
-        raise JavaScriptIntegrationError(f"Failed to get student ID: {str(e)}")
 
 async def navigate_to_week_js(page, week_offset, student_id=None):
     """
@@ -122,7 +170,7 @@ async def navigate_to_week_js(page, week_offset, student_id=None):
     Raises:
         JavaScriptIntegrationError: If navigation fails
     """
-    try:
+    async with error_screenshot_context(page, f"navigate_week_{week_offset}", "navigation_errors"):
         # If no student ID provided, extract it from the page
         if student_id is None:
             student_id = await get_student_id(page)
@@ -133,7 +181,11 @@ async def navigate_to_week_js(page, week_offset, student_id=None):
         
         # Call the JavaScript function to navigate
         logger.info(f"Navigating to week offset {week_offset}...")
-        week_info = await page.evaluate(f"glasirTimetable.navigateToWeek({week_offset}, '{student_id}')")
+        week_info = await evaluate_js_safely(
+            page,
+            f"glasirTimetable.navigateToWeek({week_offset}, '{student_id}')",
+            error_message=f"Failed to navigate to week {week_offset}"
+        )
         
         # Wait for navigation to complete (additional safeguard)
         await page.wait_for_load_state("networkidle")
@@ -145,8 +197,6 @@ async def navigate_to_week_js(page, week_offset, student_id=None):
             logger.info(f"Navigated to: Week {week_info.get('weekNumber')} ({week_info.get('startDate')} - {week_info.get('endDate')})")
         
         return week_info
-    except Exception as e:
-        raise JavaScriptIntegrationError(f"Failed to navigate to week {week_offset}: {str(e)}")
 
 async def extract_timetable_data_js(page, teacher_map=None):
     """
@@ -163,9 +213,13 @@ async def extract_timetable_data_js(page, teacher_map=None):
     Raises:
         JavaScriptIntegrationError: If data extraction fails
     """
-    try:
+    async with error_screenshot_context(page, "extract_timetable", "extraction_errors"):
         # Extract data using JavaScript
-        js_data = await page.evaluate("glasirTimetable.extractTimetableData()")
+        js_data = await evaluate_js_safely(
+            page,
+            "glasirTimetable.extractTimetableData()",
+            error_message="Failed to extract timetable data"
+        )
         
         if not js_data:
             raise JavaScriptIntegrationError("Failed to extract timetable data - empty response")
@@ -210,8 +264,6 @@ async def extract_timetable_data_js(page, teacher_map=None):
             "start_date": week_info.get("startDate"),
             "end_date": week_info.get("endDate")
         }
-    except Exception as e:
-        raise JavaScriptIntegrationError(f"Failed to extract timetable data: {str(e)}")
 
 async def return_to_baseline_js(page, original_week_offset=0, student_id=None):
     """
@@ -219,167 +271,140 @@ async def return_to_baseline_js(page, original_week_offset=0, student_id=None):
     
     Args:
         page: The Playwright page object
-        original_week_offset: The offset of the original week (default: 0 for current week)
+        original_week_offset: The offset to navigate to (defaults to 0, the current week)
         student_id: The student ID GUID. If None, it will be extracted from the page.
-        
-    Returns:
-        dict: Information about the week that was navigated to
         
     Raises:
         JavaScriptIntegrationError: If navigation fails
     """
-    try:
-        # Navigate back to the baseline
-        return await navigate_to_week_js(page, original_week_offset, student_id)
-    except Exception as e:
-        raise JavaScriptIntegrationError(f"Failed to return to baseline week: {str(e)}")
+    # Use existing navigate_to_week_js function with baseline week offset
+    return await navigate_to_week_js(page, original_week_offset, student_id)
 
 async def extract_homework_content_js(page, lesson_id):
     """
-    Extract homework content for a specific lesson using direct JavaScript calls.
+    Extract homework content for a specific lesson using JavaScript.
     
     Args:
-        page: The Playwright page object.
-        lesson_id: The unique ID of the lesson from the speech bubble onclick attribute.
+        page: The Playwright page object
+        lesson_id: The ID of the lesson to extract homework for
         
     Returns:
-        str: The extracted homework content, or None if no content was found.
+        dict: The homework content
+        
+    Raises:
+        JavaScriptIntegrationError: If homework extraction fails
     """
-    try:
-        # Check if the JavaScript integration is available
-        check_result = await page.evaluate("typeof window.glasirTimetable === 'object' && typeof window.glasirTimetable.extractHomeworkContent === 'function'")
-        if not check_result:
-            logger.warning("JavaScript homework extraction not available, falling back to UI method")
-            return None
+    async with error_screenshot_context(page, f"extract_homework_{lesson_id}", "extraction_errors"):
+        homework = await evaluate_js_safely(
+            page,
+            f"glasirTimetable.extractHomeworkContent('{lesson_id}')",
+            error_message=f"Failed to extract homework for lesson {lesson_id}"
+        )
+        
+        if homework:
+            logger.info(f"Extracted homework for lesson {lesson_id}")
+        else:
+            logger.info(f"No homework found for lesson {lesson_id}")
             
-        # Call the JavaScript function directly
-        homework_content = await page.evaluate(f"glasirTimetable.extractHomeworkContent('{lesson_id}')")
-        
-        # If content is a string, clean up any HTML tags
-        if isinstance(homework_content, str):
-            import re
-            cleaned_content = re.sub(r'<[^>]*>', '', homework_content)
-            return cleaned_content.strip()
-        
-        return homework_content
-    except Exception as e:
-        logger.error(f"JavaScript homework extraction failed: {e}")
-        return None
-
-def _console_listener(msg):
-    """Console listener callback function to print browser console messages."""
-    logger.info(f"BROWSER CONSOLE: {msg.text}")
+        return homework
 
 async def extract_all_homework_content_js(page, lesson_ids):
     """
-    Extract homework content for multiple lessons in parallel using JavaScript.
+    Extract homework content for multiple lessons using JavaScript.
     
     Args:
-        page: The Playwright page object.
-        lesson_ids: List of lesson IDs to extract homework for.
+        page: The Playwright page object
+        lesson_ids: List of lesson IDs to extract homework for
         
     Returns:
-        dict: Mapping of lesson IDs to their homework content.
+        dict: Dictionary mapping lesson IDs to homework content
+        
+    Raises:
+        JavaScriptIntegrationError: If homework extraction fails
     """
-    global _console_listener_attached
-    
-    try:
-        # Check if the JavaScript integration is available
-        check_result = await page.evaluate("typeof window.glasirTimetable === 'object' && typeof window.glasirTimetable.extractAllHomeworkContent === 'function'")
-        
-        if not check_result:
-            logger.warning("Parallel JavaScript homework extraction not available")
-            return {}
-            
-        # Call the JavaScript function with all lesson IDs
-        logger.info(f"Using parallel JavaScript method for homework extraction ({len(lesson_ids)} notes)")
-        logger.info(f"Calling JavaScript extractAllHomeworkContent with {len(lesson_ids)} IDs")
-        
-        # Wait slightly longer before calling to ensure scripts are ready
-        await page.wait_for_timeout(200)
-        
-        # Add console listener to capture JavaScript console logs - only if not already attached
-        if not _console_listener_attached:
-            page.on("console", _console_listener)
-            _console_listener_attached = True
-        
-        # Call the JavaScript function
-        homework_map = await page.evaluate(f"glasirTimetable.extractAllHomeworkContent({json.dumps(lesson_ids)})")
-        
-        # Debug information about what was returned
-        logger.info(f"JavaScript returned homework data for {len(homework_map) if homework_map else 0} lessons")
-        for lesson_id, content in (homework_map or {}).items():
-            if content:
-                logger.info(f"Found homework for {lesson_id}: {content[:30]}...")
-            else:
-                logger.info(f"No content for {lesson_id}")
-        
-        # Clean up any HTML tags in the content
-        import re
-        cleaned_map = {}
-        for lesson_id, content in (homework_map or {}).items():
-            if isinstance(content, str):
-                cleaned_content = re.sub(r'<[^>]*>', '', content).strip()
-                cleaned_map[lesson_id] = cleaned_content
-                logger.info(f"Cleaned homework for {lesson_id}: {cleaned_content[:30]}...")
-            else:
-                cleaned_map[lesson_id] = content
-                logger.info(f"No cleaning needed for {lesson_id} (value type: {type(content)})")
-        
-        return cleaned_map
-    except Exception as e:
-        logger.error(f"Parallel JavaScript homework extraction failed: {e}")
-        # Print stack trace for debugging
-        import traceback
-        traceback.print_exc()
+    if not lesson_ids:
+        logger.warning("No lesson IDs provided for homework extraction")
         return {}
+    
+    homework_data = {}
+    
+    # Ensure console listener is attached
+    register_console_listener(page)
+    
+    # Track extraction progress
+    from tqdm import tqdm
+    logger.info(f"Extracting homework for {len(lesson_ids)} lessons...")
+    
+    for lesson_id in tqdm(lesson_ids, desc="Extracting homework"):
+        try:
+            # Extract homework for this lesson
+            homework = await extract_homework_content_js(page, lesson_id)
+            
+            # Store result (even if empty)
+            homework_data[lesson_id] = homework
+            
+            # Small delay to avoid overloading the server
+            await asyncio.sleep(0.2)
+            
+        except Exception as e:
+            logger.error(f"Error extracting homework for lesson {lesson_id}: {e}")
+            add_error("homework_errors", f"Failed to extract homework for lesson {lesson_id}", str(e))
+            
+            # Store null for this lesson
+            homework_data[lesson_id] = None
+    
+    logger.info(f"Extracted homework data for {len(homework_data)} lessons")
+    return homework_data
 
 async def test_javascript_integration(page):
     """
-    Test the JavaScript integration to verify it's working correctly.
+    Test the JavaScript integration to ensure it's working correctly.
     
     Args:
         page: The Playwright page object
         
-    Returns:
-        bool: True if the integration is working correctly
-        
     Raises:
         JavaScriptIntegrationError: If the test fails
     """
-    try:
+    async with error_screenshot_context(page, "js_test", "javascript_errors"):
         logger.info("Testing JavaScript integration...")
         
-        # 1. Verify MyUpdate function exists
-        my_update_exists = await verify_myupdate_function(page)
-        if not my_update_exists:
-            logger.warning("WARNING: MyUpdate function not found, but trying to continue...")
+        # Step 1: Inject the script
+        await inject_timetable_script(page)
         
-        # 2. Try to get student ID
-        student_id = await get_student_id(page)
-        logger.info(f"Test: Student ID extraction successful - {student_id}")
+        # Step 2: Verify key functions are available
+        test_functions = [
+            "glasirTimetable.checkMyUpdateExists",
+            "glasirTimetable.getStudentId",
+            "glasirTimetable.navigateToWeek",
+            "glasirTimetable.extractTimetableData"
+        ]
         
-        # 3. Try to extract current week info
-        week_info = await page.evaluate("glasirTimetable.extractWeekInfo()")
-        logger.info(f"Test: Week info extraction successful - Week {week_info.get('weekNumber')}")
-        
-        # 4. Try a simple navigation to current week (offset 0) and back
-        if my_update_exists:
-            current_week = await navigate_to_week_js(page, 0, student_id)
-            print(f"Test: Navigation to current week successful - Week {current_week.get('weekNumber')}")
+        for func_name in test_functions:
+            result = await evaluate_js_safely(
+                page,
+                f"typeof {func_name} === 'function'",
+                error_message=f"Function {func_name} is not available"
+            )
             
-            # 5. Test homework extraction function if available
-            homework_function_exists = await page.evaluate("typeof window.glasirTimetable.extractHomeworkContent === 'function'")
-            if homework_function_exists:
-                print("Test: Homework extraction function is available")
-                # We don't actually need to call it with real data for the test
-            else:
-                print("WARNING: Homework extraction function is not available")
-        
-        print("JavaScript integration test completed successfully")
+            if not result:
+                raise JavaScriptIntegrationError(f"JavaScript integration test failed: Function {func_name} is not available")
+                
+        # Step 3: Try to extract current page data
+        student_id = await get_student_id(page)
+        if not student_id:
+            raise JavaScriptIntegrationError("JavaScript integration test failed: Could not get student ID")
+            
+        # Test navigation if MyUpdate is available
+        my_update_exists = await verify_myupdate_function(page)
+        if my_update_exists:
+            # Try a simple navigation to the current week (offset 0)
+            week_info = await navigate_to_week_js(page, 0, student_id)
+            if not week_info or not week_info.get('weekNumber'):
+                raise JavaScriptIntegrationError("JavaScript integration test failed: Navigation unsuccessful")
+                
+        logger.info("JavaScript integration test passed")
         return True
-    except Exception as e:
-        raise JavaScriptIntegrationError(f"JavaScript integration test failed: {str(e)}")
 
 # Export all functions that should be importable
 __all__ = [

@@ -23,6 +23,9 @@ from glasir_timetable.utils.formatting import (
     parse_time_range
 )
 
+from glasir_timetable import logger
+from glasir_timetable.utils.file_utils import save_json_data
+
 # Configure logger
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s - %(message)s")
 logger = logging.getLogger("converter")
@@ -293,12 +296,12 @@ def convert_file(file_path, output_dir=None, format_type="new", overwrite=False)
             base, ext = os.path.splitext(file_path)
             output_path = f"{base}_new{ext}"
         
-        # Save the converted data
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(converted_data, f, ensure_ascii=False, indent=2)
+        # Save the converted data using utility function
+        result = save_json_data(converted_data, output_path, create_dirs=True)
         
-        logger.info(f"Converted {file_path} → {output_path}")
-        return True
+        if result:
+            logger.info(f"Converted {file_path} → {output_path}")
+        return result
     
     except Exception as e:
         logger.error(f"Error converting {file_path}: {e}")

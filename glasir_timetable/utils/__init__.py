@@ -24,4 +24,25 @@ from glasir_timetable.utils.date_utils import (
     to_iso_date
 ) 
 
+from glasir_timetable.utils.file_utils import (
+    save_json_data
+)
+
+# Import error handling utilities
+from glasir_timetable.utils.error_utils import (
+    handle_errors,
+    error_screenshot_context,
+    resource_cleanup_context,
+    async_resource_cleanup_context,
+    evaluate_js_safely,
+    register_console_listener,
+    unregister_console_listener,
+    default_console_listener,
+    GlasirError,
+    JavaScriptError,
+    ExtractionError,
+    NavigationError,
+    AuthenticationError
+)
+
 # Import additional utility functions as needed 
