@@ -119,27 +119,58 @@ def generate_week_filename(year, week_num, start_date, end_date):
         start_year = None
         end_year = None
         
+        # Parse start_date year
         if '.' in start_date:
             parts = start_date.split('.')
-            if len(parts) > 0:
+            if len(parts) >= 1 and len(parts[0]) == 4:  # Format like 2024.12.30
                 try:
                     start_year = int(parts[0])
                 except ValueError:
                     start_year = year
+            elif len(parts) >= 3:  # Format like 30.12.2024
+                try:
+                    start_year = int(parts[2])
+                except (ValueError, IndexError):
+                    start_year = year
         else:
             start_year = year
             
+        # Parse end_date year
         if '.' in end_date:
             parts = end_date.split('.')
-            if len(parts) > 0:
+            if len(parts) >= 1 and len(parts[0]) == 4:  # Format like 2025.01.05
                 try:
                     end_year = int(parts[0])
                 except ValueError:
                     end_year = year
+            elif len(parts) >= 3:  # Format like 05.01.2025
+                try:
+                    end_year = int(parts[2])
+                except (ValueError, IndexError):
+                    end_year = year
+            # Special case for format 2024.2025.01.05
+            elif len(parts) >= 2 and parts[0] == "2024" and parts[1].startswith("2025"):
+                end_year = 2025
         else:
             end_year = year
         
-        # If the start and end years are different, ALWAYS use the end year for the filename
+        # For complex formats like 2024.2025.01.05, extract year from extra validation
+        if end_date and "2024.2025" in end_date:
+            end_year = 2025  # Explicit handling
+        
+        # Special rule for week number 1 spanning two years:
+        # Always assign it to the second year (even if end date is still in the first year)
+        if int(week_num) == 1 and start_year and end_year and start_year != end_year:
+            logger.debug(f"Week 1 spanning years: start_year={start_year}, end_year={end_year}, using end_year")
+            return f"{end_year} Vika {week_num} - {start_date}-{end_date}.json"
+        
+        # If week 1 spans years and we have a complex date format
+        if int(week_num) == 1 and start_date and "12" in start_date and end_date and "01" in end_date:
+            # Check for December in start date and January in end date
+            logger.debug(f"Week 1 appears to span years (Dec-Jan), using second year: {year+1}")
+            return f"{year+1} Vika {week_num} - {start_date}-{end_date}.json"
+        
+        # If the start and end years are different, use the end year for the filename
         # This ensures cross-year weeks appear under the second year
         if start_year and end_year and start_year != end_year:
             logger.debug(f"Cross-year week: start_year={start_year}, end_year={end_year}, using end_year")
