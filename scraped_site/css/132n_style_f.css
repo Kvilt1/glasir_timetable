@@ -1,0 +1,206 @@
+	table.time_8_16	{
+							border-collapse: collapse;
+							border-top:   		#000000 1px solid;
+							border-bottom:   	#000000 1px solid;
+							border-left:   		#000000 1px solid;
+							border-right:   	#000000 1px solid;
+							table-layout: fixed;
+							width: 949px;
+						}
+	td.linje1_1			{
+							width:85px;
+							height:1px;
+						}
+	td.linje1_resten	{
+							width:9px;
+							height:1px;
+						}
+	td.lektionslinje_1	{
+							border-top:   		#000000 1px solid;
+							border-bottom:   	#000000 1px solid;
+							border-left:   		#000000 1px solid;
+							border-right:   	#000000 1px solid;
+							padding: 0px 5px 0px 5px;
+							background-color: #cccccc;
+							color: #000000;
+							white-space:nowrap;
+							overflow:hidden;
+						}
+	td.lektionslinje_1_aktuel	{
+							border-top:   		#000000 2px solid;
+							border-bottom:   	#000000 2px solid;
+							border-left:   		#000000 2px solid;
+							border-right:   	#000000 2px solid;
+							padding: 0px 5px 0px 5px;
+							background-color: #ffff00;
+							color: #000000;
+							white-space:nowrap;
+							overflow:hidden;
+							font-weight:bold;
+						}
+	td.lektionslinje_lesson			{
+							border-top:   		#000000 1px solid;
+							border-bottom:   	#000000 1px solid;
+							border-left:   		#000000 1px solid;
+							border-right:   	#000000 1px solid;
+							background-color: 	#aaffaa;
+							text-align:center;
+							font-weight:bold;
+							overflow:hidden;
+						}
+
+	td.lektionslinje_lesson0, td.lektionslinje_lesson6			{
+							border-top:   		#000000 1px solid;
+							border-bottom:   	#000000 1px solid;
+							border-left:   		#000000 1px solid;
+							border-right:   	#000000 1px solid;
+							background-color: 	#aaffff;
+							text-align:center;
+							overflow:hidden;
+						}
+	td.lektionslinje_lesson1			{
+							text-decoration:line-through;
+							color: #ff4444;
+							border-top:   		#000000 1px solid;
+							border-bottom:   	#000000 1px solid;
+							border-left:   		#000000 1px solid;
+							border-right:   	#000000 1px solid;
+							background-color: 	#cccccc;
+							text-align:center;
+							white-space:nowrap;
+							overflow:hidden;
+						}
+	td.lektionslinje_lesson2			{
+							text-decoration:line-through;
+							color: #ff4444;
+							border-top:   		#000000 1px solid;
+							border-bottom:   	#000000 1px solid;
+							border-left:   		#000000 1px solid;
+							border-right:   	#000000 1px solid;
+							background-color: 	#cccccc;
+							text-align:center;
+							white-space:nowrap;
+							overflow:hidden;
+						}
+	td.lektionslinje_lesson3			{
+							text-decoration:line-through;
+							color: #ff4444;
+							border-top:   		#000000 1px solid;
+							border-bottom:   	#000000 1px solid;
+							border-left:   		#000000 1px solid;
+							border-right:   	#000000 1px solid;
+							background-color: 	#cccccc;
+							text-align:center;
+							white-space:nowrap;
+							overflow:hidden;
+						}
+	td.lektionslinje_lesson4			{
+							text-decoration:line-through;
+							color: #ff4444;
+							border-top:   		#000000 1px solid;
+							border-bottom:   	#000000 1px solid;
+							border-left:   		#000000 1px solid;
+							border-right:   	#000000 1px solid;
+							background-color: 	#ffffff;
+							text-align:center;
+							white-space:nowrap;
+							overflow:hidden;
+						}
+						
+ 						
+						
+	td.lektionslinje_lesson1 a, td.lektionslinje_lesson2 a	, td.lektionslinje_lesson3 a	, td.lektionslinje_lesson4 a , td.lektionslinje_lesson5 a , td.lektionslinje_lesson7 a , td.lektionslinje_lesson10		  a		{
+							text-decoration:line-through;
+							color: #ff4444;
+						}
+						
+
+						
+
+td.lektionslinje_lessonpast		{
+							border-top:   		#000000 1px solid;
+							border-bottom:   	#000000 1px solid;
+							border-left:   		#000000 1px solid;
+							border-right:   	#000000 1px solid;
+							background-color: 	#bbbbbb;
+							text-align:center;
+							overflow:hidden;
+						}
+	td.lektionslinje_lessoncancelled	{
+							text-decoration:line-through;
+							color: #ff4444;
+							border-top:   		#000000 1px solid;
+							border-bottom:   	#000000 1px solid;
+							border-left:   		#000000 1px solid;
+							border-right:   	#000000 1px solid;
+							background-color: 	#ffffff;
+							text-align:center;
+							white-space:nowrap;
+							overflow-x:hidden;
+						}
+	td.top				{
+							border-top:   #000000 0px solid;
+							border-bottom:   #000000 1px solid;
+							border-left:   #000000 1px solid;
+							border-right:   #000000 1px solid;
+							background-color: #ffffff;
+							color: #000000;
+							font-weight:bold;
+
+						}
+	td.top_1				{
+
+							padding: 0px 5px 0px 5px;
+							border-top:   #000000 0px solid;
+							border-bottom:   #000000 1px solid;
+							border-left:   #000000 1px solid;
+							border-right:   #000000 1px solid;
+							background-color: #ffffff;
+							color: #000000;
+						}
+	td.mellem_1			{
+
+							height: 7px;
+							border-top:   #000000 1px solid;
+							border-bottom:   #000000 1px solid;
+							border-left:   #000000 1px solid;
+							border-right:   #000000 1px solid;
+							background-color: #dddddd;
+						}		
+	td.mellem			{
+
+							height: 7px;
+							border-top:   #000000 1px solid;
+							border-bottom:   #000000 1px solid;
+							border-left:   #000000 1px solid;
+							border-right:   #000000 1px solid;
+							background-color: #dddddd;
+						}
+	td.mellemnederst	{
+							 
+							height: 7px;
+							border-top:   #000000 1px solid;
+							border-bottom:   #000000 1px solid;
+							border-left:   #000000 1px solid;
+							border-right:   #000000 1px solid;
+							background-color: #dddddd;
+						}
+	td.lektionslinje_slut			{
+							border-top:   #000000 0px solid;
+							border-bottom:   #000000 0px solid;
+							border-left:   #000000 1px solid;
+							border-right:   #000000 0px solid;
+						}
+	td.lektionslinje_ingen		{
+
+							border-top:   #7a7261 0px solid;
+							border-bottom:   #7a7261 0px solid;
+							border-left:   #7a7261 0px solid;
+							border-right:   #7a7261 0px solid;
+						}
+	td.lektionslinje_ingenslut	{
+							border-top:   #7a7261 0px solid;
+							border-bottom:   #7a7261 0px solid;
+							border-left:   #7a7261 0px solid;
+							border-right:   #000000 1px solid;
+						}
