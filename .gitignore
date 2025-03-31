@@ -1,27 +1,33 @@
-# Ignore everything by default
+# First ignore everything
 *
 
-# But don't ignore these files and directories
+# Then whitelist files we want to track
 !.gitignore
 !__main__.py
 !main.py
-!glasir_timetable/
-!glasir_timetable/**
 !INSTALLATION.md
 !pdm.toml
 !pyproject.toml
 !requirements.txt
 !README.md
 
+# Track glasir_timetable directory but with exclusions
+!glasir_timetable/
+!glasir_timetable/**/*.py
+!glasir_timetable/**/*.js
+!glasir_timetable/**/*.md
+
+# Always ignore Python cache files regardless of where they are
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/*.so
+
 # Ignore specific files inside glasir_timetable
 glasir_timetable/credentials.json
 glasir_timetable/weeks/
 
-# Ignore common Python artifacts
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
+# Ignore Python virtual environments
 .Python
 .env
 .venv
