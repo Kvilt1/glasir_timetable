@@ -43,3 +43,30 @@ Thumbs.db
 
 # Private individual user cursor rules
 .cursor/rules/_*.mdc
+
+# IDE specific files
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+.cursor/
+.cursorignore
+.cursorindexingignore
+
+# Documentation and notes that shouldn't be in the repo
+notepad_context/
+report.md
+next_steps.md
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Logs and data files
+logs/
+*.log
+output/
+.specstory/

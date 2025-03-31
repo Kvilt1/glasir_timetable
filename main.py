@@ -29,13 +29,13 @@ from glasir_timetable import logger, setup_logging, stats, update_stats, error_c
 from glasir_timetable.auth import login_to_glasir
 from glasir_timetable.extractors import (
     extract_teacher_map, 
-    extract_timetable_data,
-    get_current_week_info
+    extract_timetable_data
 )
 
 # Import JavaScript navigation functions
 from glasir_timetable.js_navigation import (
-    export_all_weeks
+    export_all_weeks,
+    export_all_weeks_api
 )
 from glasir_timetable.js_navigation.js_integration import (
     inject_timetable_script,
@@ -43,7 +43,8 @@ from glasir_timetable.js_navigation.js_integration import (
     navigate_to_week_js,
     return_to_baseline_js,
     test_javascript_integration,
-    JavaScriptIntegrationError
+    JavaScriptIntegrationError,
+    get_current_week_info
 )
 
 # Import utility functions
@@ -132,12 +133,11 @@ async def main():
     parser.add_argument('--log-level', type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], 
                         default='INFO', help='Set the logging level')
     parser.add_argument('--log-file', type=str, help='Log to a file instead of console')
-    parser.add_argument('--batch-size', type=int, default=5, help='Number of homework items to process in parallel (default: 5)')
-    parser.add_argument('--unlimited-batch-size', action='store_true', help='Process all homework items in a single batch (overrides --batch-size)')
     parser.add_argument('--collect-error-details', action='store_true', help='Collect detailed error information')
     parser.add_argument('--collect-tracebacks', action='store_true', help='Collect tracebacks for errors')
     parser.add_argument('--enable-screenshots', action='store_true', help='Enable screenshots on errors')
     parser.add_argument('--error-limit', type=int, default=100, help='Maximum number of errors to store per category')
+    parser.add_argument('--use-api', action='store_true', help='Use direct API calls instead of JavaScript-based navigation')
     args = parser.parse_args()
     
     # Configure logging based on command-line arguments
@@ -200,6 +200,8 @@ async def main():
         }
         
         # Define cleanup functions
+        # Note: The application now uses sequential homework extraction - first trying the bulk API
+        # then falling back to individual lesson requests when bulk API fails to return data
         cleanup_funcs = {
             "browser": lambda browser: asyncio.create_task(browser.close())
         }
@@ -228,21 +230,18 @@ async def main():
             navigation_service = services["navigation_service"]
             extraction_service = services["extraction_service"]
             
-            # Set effective batch size (override with a large number if unlimited is set)
-            if args.unlimited_batch_size:
-                import sys
-                effective_batch_size = sys.maxsize  # Use maximum integer value
-                logger.info(f"Using unlimited batch size for homework extraction")
-            else:
-                effective_batch_size = args.batch_size
-                logger.info(f"Using batch size of {effective_batch_size} for homework extraction")
-            
             async with error_screenshot_context(page, "main", "general_errors", take_screenshot=args.enable_screenshots):
                 # Login to Glasir using the authentication service
                 login_success = await auth_service.login(credentials["username"], credentials["password"], page)
                 if not login_success:
                     logger.error("Authentication failed. Please check your credentials.")
                     return
+                
+                # Extract cookies for API calls
+                api_cookies = {}
+                browser_cookies = await page.context.cookies()
+                api_cookies = {cookie['name']: cookie['value'] for cookie in browser_cookies}
+                logger.info(f"Extracted {len(api_cookies)} cookies for API requests")
                 
                 # Initialize student_id for JavaScript navigation
                 student_id = None
@@ -268,21 +267,41 @@ async def main():
                 if args.all_weeks:
                     logger.info("Processing all weeks from all academic years...")
                     
-                    # Export all weeks using the dedicated function
-                    export_results = await export_all_weeks(
-                        page=page,
-                        output_dir=args.output_dir,
-                        teacher_map=teacher_map,
-                        student_id=student_id,
-                        batch_size=effective_batch_size
-                    )
+                    # Choose between API-based or JS-based implementation for all weeks export
+                    if args.use_api:
+                        # Import the API-based export function
+                        from glasir_timetable.js_navigation import export_all_weeks_api
+                        logger.info("Using API-based implementation for exporting all weeks")
+                        
+                        # Export all weeks using API-based approach
+                        export_results = await export_all_weeks_api(
+                            page=page,
+                            output_dir=args.output_dir,
+                            teacher_map=teacher_map,
+                            student_id=student_id,
+                            api_cookies=api_cookies,
+                            concurrent_homework=True
+                        )
+                    else:
+                        # Export all weeks using the dedicated function with API cookies
+                        # Homework is processed using concurrent approach: homework extraction happens
+                        # independently and simultaneously with week navigation and extraction
+                        logger.info("Using JavaScript-based implementation for exporting all weeks")
+                        export_results = await export_all_weeks(
+                            page=page,
+                            output_dir=args.output_dir,
+                            teacher_map=teacher_map,
+                            student_id=student_id,
+                            api_cookies=api_cookies,
+                            concurrent_homework=True  # Use the new concurrent homework processing approach
+                        )
                     
                     # Log results
                     logger.info(f"Completed processing all weeks. Extracted {export_results['processed_weeks']} of {export_results['total_weeks']} weeks.")
                     if export_results['errors']:
                         logger.warning(f"Encountered {len(export_results['errors'])} errors during extraction.")
                     
-                    # Skip the rest of the processing since we've already handled all weeks
+                    # Skip
                     return
                 
                 # Process specific weeks
@@ -292,8 +311,20 @@ async def main():
                     
                     # Extract timetable data using HTML parsing
                     try:
-                        # Extract current week's data
-                        timetable_data, week_info = await extract_timetable_data(page, teacher_map, batch_size=effective_batch_size)
+                        # Choose between API-based or JS-based implementation based on the use-api flag
+                        if args.use_api:
+                            from glasir_timetable.navigation import navigate_and_extract_api
+                            logger.info("Using API-based implementation for current week extraction")
+                            timetable_data, week_info, _ = await navigate_and_extract_api(
+                                page, 0, teacher_map, student_id, api_cookies
+                            )
+                        else:
+                            # Extract current week's data with sequential homework extraction:
+                            # First attempts bulk API, then falls back to individual lessons if bulk API returns empty
+                            logger.info("Using JavaScript-based implementation for current week extraction")
+                            timetable_data, week_info, _ = await navigate_and_extract(
+                                page, 0, teacher_map, student_id, api_cookies
+                            )
                     except Exception as e:
                         logger.error(f"Error extracting current week's timetable data: {e}")
                         return
@@ -323,14 +354,16 @@ async def main():
                         directions = await get_week_directions(args)
                         
                         # Process all requested weeks
+                        # Each week uses sequential homework extraction approach
                         additional_results = await process_weeks(
                             page=page,
                             directions=directions,
                             teacher_map=teacher_map,
                             student_id=student_id,
                             output_dir=args.output_dir,
+                            api_cookies=api_cookies,
                             processed_weeks={week_info['week_num']} if week_info else set(),
-                            batch_size=effective_batch_size
+                            use_api=args.use_api  # Use the direct API if requested
                         )
 
             # Print summary of errors

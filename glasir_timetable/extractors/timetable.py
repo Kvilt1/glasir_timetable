@@ -182,18 +182,18 @@ async def extract_student_info(page):
         "class": "22y"
     }
 
-async def extract_timetable_data(page, teacher_map, batch_size=3, use_models=True):
+async def extract_timetable_data(page, teacher_map, use_models=True):
     """
     Extract timetable data from the page using BeautifulSoup parsing.
     
     Args:
         page: The Playwright page object.
         teacher_map: A dictionary mapping teacher initials to full names.
-        batch_size: Number of homework items to process in parallel (default: 3)
         use_models: Whether to return Pydantic models (default: True)
         
     Returns:
-        tuple: A tuple containing timetable data (dict or TimetableData) and week information.
+        tuple: A tuple containing (timetable_data_dict, week_info, homework_lesson_ids)
+               where homework_lesson_ids is a list of lesson IDs that have homework icons
     """
     logger.info("Extracting timetable data...")
     
@@ -214,7 +214,7 @@ async def extract_timetable_data(page, teacher_map, batch_size=3, use_models=Tru
     tbody = table.find('tbody')
     if not tbody:
         logger.info("Error: Could not find tbody within the table.")
-        return None
+        return None, None, []
 
     # Extract date range directly from the HTML
     # Look for the date range pattern like "24.03.2025 - 30.03.2025"
@@ -273,8 +273,8 @@ async def extract_timetable_data(page, teacher_map, batch_size=3, use_models=Tru
 
     rows = tbody.find_all('tr', recursive=False)
 
-    # New: collect all lesson IDs with notes for parallel extraction
-    all_note_lessons = []
+    # Collection for lesson IDs with homework notes
+    homework_lesson_ids = []
     lesson_id_to_details = {}  # Map to find lesson details by ID
 
     for row in rows:
@@ -409,8 +409,9 @@ async def extract_timetable_data(page, teacher_map, batch_size=3, use_models=Tru
                         if lesson_id_match:
                             lesson_id = lesson_id_match.group(1)
                             
-                            # Store for parallel processing instead of extracting now
-                            all_note_lessons.append((lesson_id, subject_code))
+                            # Store the lesson ID for later API-based homework fetching
+                            homework_lesson_ids.append(lesson_id)
+                            lesson_details["lessonId"] = lesson_id
                             logger.debug(f"Found homework note for {subject_code} (ID: {lesson_id}{'- cancelled' if is_cancelled else ''})")
                             
                             # Store mapping for later homework assignment
@@ -427,103 +428,7 @@ async def extract_timetable_data(page, teacher_map, batch_size=3, use_models=Tru
 
             # Update column index for the next cell
             current_col_index += colspan
-            
-    # Now process all note lessons in parallel if JavaScript is available
-    if all_note_lessons:
-        from tqdm import tqdm
-        import time
-        from glasir_timetable import update_stats
-
-        logger.info(f"Processing {len(all_note_lessons)} homework assignments")
-        
-        # Check if JavaScript method is available
-        js_available = False
-        skip_sequential_extraction = False  # Initialize the flag
-        try:
-            js_available = await page.evaluate("typeof window.glasirTimetable === 'object' && typeof window.glasirTimetable.extractHomeworkContent === 'function'")
-            parallel_available = await page.evaluate("typeof window.glasirTimetable === 'object' && typeof window.glasirTimetable.extractAllHomeworkContentParallel === 'function'")
-            
-            if parallel_available:
-                logger.info("Parallel JavaScript homework extraction available - using batch processing")
-                
-                # Extract just the lesson IDs for parallel processing
-                lesson_ids = [lesson_id for lesson_id, _ in all_note_lessons]
-                
-                try:
-                    # Import the JavaScript integration function
-                    from glasir_timetable.js_navigation.js_integration import extract_all_homework_content_js
-                    
-                    # Use the parallel extraction function
-                    homework_data = await extract_all_homework_content_js(page, lesson_ids, batch_size)
-                    
-                    # Assign the homework content to the corresponding lesson details
-                    homework_count = 0
-                    for lesson_id, content in homework_data.items():
-                        if content and lesson_id in lesson_id_to_details:
-                            lesson_details = lesson_id_to_details[lesson_id]
-                            lesson_details["description"] = content
-                            homework_count += 1
-                            update_stats("homework_success")
-                    
-                    logger.info(f"Successfully assigned {homework_count} homework entries from parallel extraction")
-                    
-                    # Set a flag to skip the sequential processing rather than returning early
-                    # This ensures all other processing steps will still be executed
-                    skip_sequential_extraction = True
-                    
-                except Exception as e:
-                    logger.error(f"Error in parallel homework extraction: {e}")
-                    # Switch to sequential extraction
-                    logger.info("Switching to sequential homework extraction")
-                    skip_sequential_extraction = False
-            else:
-                logger.info(f"JavaScript homework extraction {'available' if js_available else 'not available'} (parallel API not found)")
-                skip_sequential_extraction = False
-        except Exception as e:
-            logger.warning(f"Error checking JavaScript availability: {e}")
-            skip_sequential_extraction = False
-        
-        # If we get here, either parallel extraction wasn't available or it failed
-        # Only do sequential extraction if parallel extraction didn't succeed
-        if not skip_sequential_extraction:
-            # Track extraction results
-            homework_count = 0
-            failures = 0
-            
-            # Create a progress bar for homework extraction
-            with tqdm(total=len(all_note_lessons), desc="Extracting homework", unit="notes",
-                     bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
-                     dynamic_ncols=True, position=1, leave=False) as pbar:
-                start_time = time.time()
-                
-                for lesson_id, subject_code in all_note_lessons:
-                    lesson_details = lesson_id_to_details.get(lesson_id)
-                    if lesson_details:
-                        # Extract homework content
-                        result = await extract_homework_content(page, lesson_id, subject_code)
-                        
-                        if result["success"]:
-                            lesson_details["description"] = result["content"]  # Use description instead of Homework
-                            homework_count += 1
-                            pbar.set_description(f"Homework: {subject_code} ({result['method']} success)")
-                        else:
-                            failures += 1
-                            pbar.set_description(f"Homework: {subject_code} ({result['method']} failed)")
-                        
-                        # Update progress
-                        pbar.update(1)
-                        
-                        # Calculate and display statistics
-                        elapsed = time.time() - start_time
-                        items_per_min = 60 * pbar.n / elapsed if elapsed > 0 else 0
-                        pbar.set_postfix({
-                            "success": homework_count, 
-                            "failed": failures,
-                            "rate": f"{items_per_min:.1f}/min"
-                        })
-            
-            logger.info(f"Successfully assigned {homework_count} homework entries ({failures} failures)")
-
+    
     # Sort the all_events list by date and time
     all_events.sort(key=lambda x: (x["date"], x.get("timeSlot", ""), x.get("startTime", "")))
 
@@ -622,14 +527,11 @@ async def extract_timetable_data(page, teacher_map, batch_size=3, use_models=Tru
         "formatVersion": 2
     }
     
-    # Convert to model if requested
-    if use_models:
-        timetable_model, success = dict_to_timetable_data(timetable_data_dict)
-        if success:
-            return timetable_model, week_info
+    # Log summary of extraction
+    logger.info(f"Extracted {len(all_events)} events and found {len(homework_lesson_ids)} events with homework")
     
-    # Fall back to returning dictionary
-    return timetable_data_dict, week_info
+    # Return the timetable dictionary, week info, and the list of lesson IDs with homework
+    return timetable_data_dict, week_info, homework_lesson_ids
 
 async def get_week_info(page):
     """
