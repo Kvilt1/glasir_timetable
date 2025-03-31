@@ -22,6 +22,7 @@ async def login_to_glasir(page, username, password):
     
     # Enter email
     logger.info("Entering username...")
+    await page.wait_for_selector("#i0116", state="visible")
     await page.fill("#i0116", email)
     await page.click("#idSIButton9")
     
@@ -44,5 +45,5 @@ async def login_to_glasir(page, username, password):
     await page.wait_for_url("https://tg.glasir.fo/132n/**", timeout=30000)
     logger.info("Successfully logged in!")
     
-    # Give the page a moment to fully load
-    await page.wait_for_load_state("networkidle") 
+    # Wait for the timetable to be visible instead of networkidle
+    await page.wait_for_selector("table.time_8_16", state="visible", timeout=10000) 

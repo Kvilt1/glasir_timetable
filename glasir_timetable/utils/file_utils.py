@@ -7,11 +7,12 @@ import json
 from typing import Any, Dict, Optional, Union
 
 from glasir_timetable import logger
+from glasir_timetable.models import TimetableData
+from glasir_timetable.utils.model_adapters import timetable_data_to_dict
 
 def save_json_data(
-    data: Any,
+    data: Union[Dict[str, Any], TimetableData],
     output_path: str,
-    format_type: Optional[str] = None,
     create_dirs: bool = True,
     indent: int = 2
 ) -> bool:
@@ -19,9 +20,8 @@ def save_json_data(
     Save data to a JSON file with consistent settings.
     
     Args:
-        data: The data to save
+        data: The data to save (dict or TimetableData model)
         output_path: Path to save the JSON file
-        format_type: Optional format type for timetable data ('event-centric', 'traditional', 'dual')
         create_dirs: Whether to create parent directories if they don't exist
         indent: Indentation level for the JSON file
         
@@ -33,19 +33,11 @@ def save_json_data(
         if create_dirs:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
-        # Format selection for timetable data
+        # Convert model to dictionary if needed
         data_to_save = data
-        if format_type and format_type != "dual":
-            # Import here to avoid circular imports
-            from glasir_timetable.main import select_format
-            # Only apply format selection if it appears to be timetable data
-            try:
-                data_to_save = select_format(data, format_type)
-                logger.info(f"Using {format_type} format")
-            except (AttributeError, TypeError, KeyError):
-                # If format selection fails, use the original data
-                logger.warning(f"Format selection failed, saving original data")
-                data_to_save = data
+        if isinstance(data, TimetableData):
+            data_to_save = timetable_data_to_dict(data)
+            logger.info(f"Converted model to dictionary for serialization")
         
         # Save data to JSON file
         with open(output_path, 'w', encoding='utf-8') as f:

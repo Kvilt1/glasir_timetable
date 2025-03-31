@@ -1,35 +1,42 @@
 #!/usr/bin/env python3
 """
-Timetable data extraction module.
+Timetable extraction logic used to extract data from the Glasir timetable page.
 """
+
 import re
-import json
-import asyncio
+import time
 import logging
+import asyncio
+from typing import Dict, List, Tuple, Any, Union, Optional
 from datetime import datetime, timedelta
-from glasir_timetable import logger
 from bs4 import BeautifulSoup
+from tqdm.auto import tqdm
 
 from glasir_timetable.constants import (
-    BLOCK_TIMES, 
-    DAY_NAME_MAPPING, 
-    SUBJECT_CODE_MAPPING,
-    ROOM_FORMAT_MAPPING,
+    BLOCK_TIMES,
+    DAY_NAME_MAPPING,
     DAYS_ORDER,
     CANCELLED_CLASS_INDICATORS
 )
 from glasir_timetable.utils.formatting import (
-    format_academic_year, 
-    get_timeslot_info, 
+    normalize_week_number,
     convert_keys_to_camel_case,
     format_iso_date,
-    parse_time_range
+    parse_time_range,
+    format_academic_year,
+    get_timeslot_info
 )
+from glasir_timetable.utils.date_utils import normalize_dates, parse_date
+from glasir_timetable.utils.model_adapters import dict_to_timetable_data
+from glasir_timetable.utils import logger
+from glasir_timetable import add_error, update_stats
+
+from glasir_timetable.models import TimetableData, StudentInfo, WeekInfo, Event
 
 async def extract_homework_content(page, lesson_id, subject_code="Unknown"):
     """
     Extract homework content for a specific lesson.
-    Prioritizes using JavaScript method over UI-based clicking.
+    Uses only JavaScript method without UI-based fallback.
     
     Args:
         page: The Playwright page object.
@@ -40,229 +47,75 @@ async def extract_homework_content(page, lesson_id, subject_code="Unknown"):
         dict: A dictionary with success status, content, and error if any.
     """
     try:
-        # Always try JavaScript method first
-        try:
-            # Check if the glasirTimetable JavaScript object exists
-            js_available = await page.evaluate("typeof window.glasirTimetable === 'object' && typeof window.glasirTimetable.extractHomeworkContent === 'function'")
-            
-            if js_available:
-                logger.debug(f"Using JavaScript method for homework extraction (lesson ID: {lesson_id})")
-                # Call the JavaScript function directly
-                homework_content = await page.evaluate(f"glasirTimetable.extractHomeworkContent('{lesson_id}')")
-                
-                # If content is a string, clean up any HTML tags
-                if isinstance(homework_content, str):
-                    import re
-                    cleaned_content = re.sub(r'<[^>]*>', '', homework_content)
-                    cleaned_content = cleaned_content.strip()
-                    
-                    # Validate content isn't empty
-                    if cleaned_content:
-                        from glasir_timetable import update_stats
-                        update_stats("homework_success")
-                        return {
-                            "success": True,
-                            "content": cleaned_content,
-                            "method": "javascript"
-                        }
-                    else:
-                        from glasir_timetable import add_error, update_stats
-                        add_error("homework_errors", f"Empty homework content for {subject_code}", {
-                            "lesson_id": lesson_id,
-                            "method": "javascript"
-                        })
-                        update_stats("homework_failed")
-                        return {
-                            "success": False,
-                            "error": "Empty content",
-                            "method": "javascript"
-                        }
-                
-                # If we got non-string content, check if it's something we can use
-                if homework_content:
-                    from glasir_timetable import update_stats
-                    update_stats("homework_success")
-                    return {
-                        "success": True,
-                        "content": str(homework_content),
-                        "method": "javascript"
-                    }
-                
-                # Check if we should use UI fallback (only if JavaScript is not enforced)
-                use_ui_fallback = await page.evaluate("window.glasirTimetable.useUIFallback !== false")
-                if not use_ui_fallback:
-                    from glasir_timetable import add_error, update_stats
-                    add_error("homework_errors", f"JavaScript method returned no content for {subject_code}", {
-                        "lesson_id": lesson_id
-                    })
-                    update_stats("homework_failed")
-                    return {
-                        "success": False,
-                        "error": "No content from JavaScript method, UI fallback disabled",
-                        "method": "javascript"
-                    }
-            
-        except Exception as js_error:
-            # Check if we should use UI fallback
-            try:
-                use_ui_fallback = await page.evaluate("window.glasirTimetable.useUIFallback !== false")
-                if not use_ui_fallback:
-                    from glasir_timetable import add_error, update_stats
-                    add_error("homework_errors", f"JavaScript homework extraction failed for {subject_code}: {js_error}", {
-                        "lesson_id": lesson_id,
-                        "error": str(js_error)
-                    })
-                    update_stats("homework_failed")
-                    return {
-                        "success": False,
-                        "error": f"JavaScript extraction error: {js_error}",
-                        "method": "javascript"
-                    }
-            except:
-                pass
+        # Check if the glasirTimetable JavaScript object exists
+        js_available = await page.evaluate("typeof window.glasirTimetable === 'object' && typeof window.glasirTimetable.extractHomeworkContent === 'function'")
         
-        # Fall back to UI method
-        # Find the speech bubble by its specific window ID
-        selector = f'input[type="image"][src*="note.gif"][onclick*="{lesson_id}"]'
-        
-        # Check if the speech bubble exists
-        bubble_element = await page.query_selector(selector)
-        if not bubble_element:
+        if not js_available:
+            logger.error(f"JavaScript method not available for homework extraction (lesson ID: {lesson_id})")
             from glasir_timetable import add_error, update_stats
-            add_error("homework_errors", f"No speech bubble found for {subject_code}", {
+            add_error("homework_errors", f"JavaScript method not available for {subject_code}", {
                 "lesson_id": lesson_id
             })
             update_stats("homework_failed")
             return {
                 "success": False,
-                "error": "Speech bubble not found",
-                "method": "ui"
+                "error": "JavaScript method not available",
+                "method": "javascript"
             }
             
-        # First, clear any previous homework popup by clicking elsewhere 
-        await page.click('body', position={"x": 1, "y": 1})
+        logger.debug(f"Using JavaScript method for homework extraction (lesson ID: {lesson_id})")
+        # Call the JavaScript function directly
+        homework_content = await page.evaluate(f"glasirTimetable.extractHomeworkContent('{lesson_id}')")
         
-        # Now click the speech bubble for this specific class
-        await bubble_element.click()
-        
-        # Wait for the popup window to appear using explicit selector with timeout
-        popup_selector = f'#MyWindow{lesson_id}Main'
-        try:
-            # Wait for the popup with a reasonable timeout
-            await page.wait_for_selector(popup_selector, timeout=3000)
+        # If content is a string, clean up any HTML tags
+        if isinstance(homework_content, str):
+            import re
+            cleaned_content = re.sub(r'<[^>]*>', '', homework_content)
+            cleaned_content = cleaned_content.strip()
             
-            # Use the window ID to specifically target this popup's content
-            homework_content = await page.evaluate(f'''(lessonId) => {{
-                // Look for the specific window containing this lesson's homework
-                const windowId = `MyWindow${{lessonId}}Main`;
-                const specificWindow = document.getElementById(windowId);
-                
-                if (specificWindow) {{
-                    // Method 1: Parse the paragraph with HTML structure
-                    const paragraphs = specificWindow.querySelectorAll('p');
-                    for (const para of paragraphs) {{
-                        if (para.innerHTML && para.innerHTML.includes('<b>Heimaarbeiði</b>')) {{
-                            // Extract content after the <br> tag
-                            const parts = para.innerHTML.split('<br>');
-                            if (parts.length > 1) {{
-                                // Get everything after the first <br>
-                                return parts.slice(1).join('<br>').trim();
-                            }}
-                        }}
-                    }}
-                    
-                    // Method 2: Direct text extraction
-                    const allText = [];
-                    const walk = document.createTreeWalker(
-                        specificWindow, 
-                        NodeFilter.SHOW_TEXT, 
-                        null, 
-                        false
-                    );
-                    
-                    let foundHeimalabel = false;
-                    
-                    while(walk.nextNode()) {{
-                        const text = walk.currentNode.textContent.trim();
-                        if (text) {{
-                            allText.push(text);
-                            
-                            // Case 1: Text node is exactly "Heimaarbeiði"
-                            if (text === "Heimaarbeiði") {{
-                                foundHeimalabel = true;
-                            }} 
-                            // Case 2: We previously found the label, this is the content
-                            else if (foundHeimalabel) {{
-                                return text;
-                            }}
-                            // Case 3: Text contains "Heimaarbeiði" and more content
-                            else if (text.includes('Heimaarbeiði')) {{
-                                return text.substring(text.indexOf('Heimaarbeiði') + 'Heimaarbeiði'.length).trim();
-                            }}
-                        }}
-                    }}
-                    
-                    // If we get here and have collected text, check if we missed anything
-                    if (allText.length > 1 && allText[0] === "Heimaarbeiði") {{
-                        return allText[1];
-                    }}
-                    
-                    // Method 3: Try getting the innerHTML of the entire window as last resort
-                    if (allText.length === 0) {{
-                        const html = specificWindow.innerHTML;
-                        if (html.includes('<b>Heimaarbeiði</b><br>')) {{
-                            const content = html.split('<b>Heimaarbeiði</b><br>')[1];
-                            if (content) {{
-                                // Extract up to the next tag
-                                const endMatch = content.match(/<\\/(p|div|span)>/);
-                                if (endMatch) {{
-                                    return content.substring(0, endMatch.index).trim();
-                                }}
-                                return content.split('<')[0].trim();
-                            }}
-                        }}
-                    }}
-                }}
-                
-                return null;
-            }}''', lesson_id)
-            
-            # Close the popup by clicking elsewhere
-            await page.click('body', position={"x": 1, "y": 1})
-            
-            # Check if we got valid content
-            if homework_content and isinstance(homework_content, str) and homework_content.strip():
+            # Validate content isn't empty
+            if cleaned_content:
                 from glasir_timetable import update_stats
                 update_stats("homework_success")
                 return {
                     "success": True,
-                    "content": homework_content.strip(),
-                    "method": "ui"
+                    "content": cleaned_content,
+                    "method": "javascript"
                 }
             else:
                 from glasir_timetable import add_error, update_stats
-                add_error("homework_errors", f"UI method returned empty content for {subject_code}", {
-                    "lesson_id": lesson_id
+                add_error("homework_errors", f"Empty homework content for {subject_code}", {
+                    "lesson_id": lesson_id,
+                    "method": "javascript"
                 })
                 update_stats("homework_failed")
                 return {
                     "success": False,
-                    "error": "Empty content from UI method",
-                    "method": "ui"
+                    "error": "Empty content",
+                    "method": "javascript"
                 }
-        except Exception as timeout_error:
-            # Handle timeout or other errors during popup waiting
-            from glasir_timetable import add_error, update_stats
-            add_error("homework_errors", f"Error waiting for popup for {subject_code}: {timeout_error}", {
-                "lesson_id": lesson_id,
-                "error": str(timeout_error)
-            })
-            update_stats("homework_failed")
+        
+        # If we got non-string content, check if it's something we can use
+        if homework_content:
+            from glasir_timetable import update_stats
+            update_stats("homework_success")
             return {
-                "success": False,
-                "error": f"Popup timeout: {timeout_error}",
-                "method": "ui"
+                "success": True,
+                "content": str(homework_content),
+                "method": "javascript"
             }
+            
+        # JavaScript method returned no content
+        from glasir_timetable import add_error, update_stats
+        add_error("homework_errors", f"JavaScript method returned no content for {subject_code}", {
+            "lesson_id": lesson_id
+        })
+        update_stats("homework_failed")
+        return {
+            "success": False,
+            "error": "No content from JavaScript method",
+            "method": "javascript"
+        }
             
     except Exception as e:
         from glasir_timetable import add_error, update_stats
@@ -274,20 +127,8 @@ async def extract_homework_content(page, lesson_id, subject_code="Unknown"):
         return {
             "success": False,
             "error": str(e),
-            "method": "unknown"
+            "method": "javascript"
         }
-    
-    # This should never be reached, but just in case
-    from glasir_timetable import add_error, update_stats
-    add_error("homework_errors", f"Unknown error in homework extraction for {subject_code}", {
-        "lesson_id": lesson_id
-    })
-    update_stats("homework_failed")
-    return {
-        "success": False,
-        "error": "Unknown extraction error",
-        "method": "unknown"
-    }
 
 async def extract_student_info(page):
     """
@@ -341,7 +182,7 @@ async def extract_student_info(page):
         "class": "22y"
     }
 
-async def extract_timetable_data(page, teacher_map, batch_size=3):
+async def extract_timetable_data(page, teacher_map, batch_size=3, use_models=True):
     """
     Extract timetable data from the page using BeautifulSoup parsing.
     
@@ -349,17 +190,18 @@ async def extract_timetable_data(page, teacher_map, batch_size=3):
         page: The Playwright page object.
         teacher_map: A dictionary mapping teacher initials to full names.
         batch_size: Number of homework items to process in parallel (default: 3)
+        use_models: Whether to return Pydantic models (default: True)
         
     Returns:
-        tuple: A tuple containing timetable data and week information.
+        tuple: A tuple containing timetable data (dict or TimetableData) and week information.
     """
     logger.info("Extracting timetable data...")
     
     # Get HTML content from the page
     html_content = await page.content()
     
-    # Use BeautifulSoup to parse the HTML
-    soup = BeautifulSoup(html_content, 'html.parser')
+    # Use BeautifulSoup to parse the HTML with lxml for better performance
+    soup = BeautifulSoup(html_content, 'lxml')
     
     # Get the current year
     current_year = datetime.now().year
@@ -418,9 +260,8 @@ async def extract_timetable_data(page, teacher_map, batch_size=3):
     
     # New structure: {"studentInfo": {...}, "events": [...]}
     timetable_data = {}
-    day_classes = {}
     all_events = []
-    
+
     current_day_name_fo = None
     current_date_part = None
     first_date_obj = None
@@ -431,11 +272,10 @@ async def extract_timetable_data(page, teacher_map, batch_size=3):
         logger.info(f"Using extracted start date for week calculation: {first_date_obj}")
 
     rows = tbody.find_all('tr', recursive=False)
-    
+
     # New: collect all lesson IDs with notes for parallel extraction
     all_note_lessons = []
     lesson_id_to_details = {}  # Map to find lesson details by ID
-    lesson_id_to_classes = {}  # Map to know which day and class index to update
 
     for row in rows:
         cells = row.find_all('td', recursive=False)
@@ -452,11 +292,7 @@ async def extract_timetable_data(page, teacher_map, batch_size=3):
         if is_day_header and day_match:
             current_day_name_fo = day_match.group(1)
             current_date_part = day_match.group(2)
-            day_en = DAY_NAME_MAPPING.get(current_day_name_fo, current_day_name_fo)
             
-            if day_en not in day_classes:
-                day_classes[day_en] = []
-
             # Try to capture the first date for week calculation
             if first_date_obj is None:
                 try:
@@ -576,6 +412,9 @@ async def extract_timetable_data(page, teacher_map, batch_size=3):
                             # Store for parallel processing instead of extracting now
                             all_note_lessons.append((lesson_id, subject_code))
                             logger.debug(f"Found homework note for {subject_code} (ID: {lesson_id}{'- cancelled' if is_cancelled else ''})")
+                            
+                            # Store mapping for later homework assignment
+                            lesson_id_to_details[lesson_id] = lesson_details
                     
                     # Add exam-specific details if this is an exam
                     if code_parts and code_parts[0] == "Várroynd" and len(code_parts) > 2:
@@ -583,49 +422,8 @@ async def extract_timetable_data(page, teacher_map, batch_size=3):
                         lesson_details["examLevel"] = code_parts[2] if len(code_parts) > 2 else ""
                         lesson_details["examType"] = "Spring Exam"
 
-                    # Store event in both old structure (day_classes) and new flattened structure (all_events)
-                    # Special handling for making sure class entries are unique
-                    if day_en in day_classes:
-                        # Check if this exact class already exists in the list
-                        duplicate_found = False
-                        for i, existing_class in enumerate(day_classes[day_en]):
-                            if (existing_class["title"] == lesson_details["title"] and
-                                existing_class["timeSlot"] == lesson_details["timeSlot"] and
-                                existing_class["teacherShort"] == lesson_details["teacherShort"]):
-                                
-                                # If it has a note, store the mapping for later
-                                if note_img and lesson_id_match:
-                                    # For parallel homework processing
-                                    lesson_id = lesson_id_match.group(1)
-                                    lesson_id_to_details[lesson_id] = existing_class
-                                    lesson_id_to_classes[lesson_id] = (day_en, i)
-                                
-                                duplicate_found = True
-                                break
-                        
-                        # Only add the class if it's not a duplicate
-                        if not duplicate_found:
-                            class_index = len(day_classes[day_en])
-                            day_classes[day_en].append(lesson_details)
-                            all_events.append(lesson_details)  # Add to flattened structure
-                            
-                            # If it has a note, store the mapping for later
-                            if note_img and lesson_id_match:
-                                # For parallel homework processing
-                                lesson_id = lesson_id_match.group(1)
-                                lesson_id_to_details[lesson_id] = lesson_details
-                                lesson_id_to_classes[lesson_id] = (day_en, class_index)
-                    else:
-                        # First class for this day
-                        day_classes[day_en] = [lesson_details]
-                        all_events.append(lesson_details)  # Add to flattened structure
-                        
-                        # If it has a note, store the mapping for later
-                        if note_img and lesson_id_match:
-                            # For parallel homework processing
-                            lesson_id = lesson_id_match.group(1)
-                            lesson_id_to_details[lesson_id] = lesson_details
-                            lesson_id_to_classes[lesson_id] = (day_en, 0)
+                    # Add event to the flattened structure
+                    all_events.append(lesson_details)
 
             # Update column index for the next cell
             current_col_index += colspan
@@ -675,8 +473,8 @@ async def extract_timetable_data(page, teacher_map, batch_size=3):
                     
                 except Exception as e:
                     logger.error(f"Error in parallel homework extraction: {e}")
-                    # Fall through to traditional extraction
-                    logger.info("Falling back to sequential homework extraction")
+                    # Switch to sequential extraction
+                    logger.info("Switching to sequential homework extraction")
                     skip_sequential_extraction = False
             else:
                 logger.info(f"JavaScript homework extraction {'available' if js_available else 'not available'} (parallel API not found)")
@@ -701,7 +499,7 @@ async def extract_timetable_data(page, teacher_map, batch_size=3):
                 for lesson_id, subject_code in all_note_lessons:
                     lesson_details = lesson_id_to_details.get(lesson_id)
                     if lesson_details:
-                        # Extract homework content using our improved function (JS first with better UI fallback)
+                        # Extract homework content
                         result = await extract_homework_content(page, lesson_id, subject_code)
                         
                         if result["success"]:
@@ -726,34 +524,7 @@ async def extract_timetable_data(page, teacher_map, batch_size=3):
             
             logger.info(f"Successfully assigned {homework_count} homework entries ({failures} failures)")
 
-    # Sort classes for each day by time slot and prioritize uncancelled classes
-    for day, classes in day_classes.items():
-        # First, create a dictionary to group classes by time slot
-        time_slot_groups = {}
-        for class_info in classes:
-            time_slot = class_info["timeSlot"]
-            if time_slot not in time_slot_groups:
-                time_slot_groups[time_slot] = []
-            time_slot_groups[time_slot].append(class_info)
-        
-        # Sort each time slot group, putting uncancelled classes first
-        for time_slot, slot_classes in time_slot_groups.items():
-            time_slot_groups[time_slot] = sorted(slot_classes, key=lambda x: x["cancelled"])
-        
-        # Special handling for sorting - put "All day" events first
-        sorted_time_slots = sorted(time_slot_groups.keys(), 
-                                   key=lambda x: (0 if x == "All day" else 
-                                                  1 if x.endswith(".") else 2, x))
-        
-        # Flatten the list with the new sorting
-        sorted_classes = []
-        for time_slot in sorted_time_slots:
-            sorted_classes.extend(time_slot_groups[time_slot])
-        
-        # Update the day's classes with the sorted list
-        day_classes[day] = sorted_classes
-    
-    # Also sort the all_events list by date and time
+    # Sort the all_events list by date and time
     all_events.sort(key=lambda x: (x["date"], x.get("timeSlot", ""), x.get("startTime", "")))
 
     # Calculate week information
@@ -779,7 +550,7 @@ async def extract_timetable_data(page, teacher_map, batch_size=3):
         }
         logger.info(f"Using extracted week info: {week_info}")
     elif first_date_obj:
-        # Fallback to the previous method if direct extraction fails
+        # Use calculated date information
         # Calculate week number
         week_num = first_date_obj.isocalendar()[1]
         
@@ -804,7 +575,7 @@ async def extract_timetable_data(page, teacher_map, batch_size=3):
         }
         logger.info(f"Using calculated week info: {week_info}")
     else:
-        # Default week info if date parsing fails
+        # Use current date when no date information is available
         now = datetime.now()
         week_num = now.isocalendar()[1]
         
@@ -828,11 +599,6 @@ async def extract_timetable_data(page, teacher_map, batch_size=3):
         }
         logger.warning(f"Using default week info (no dates found): {week_info}")
 
-    # Ensure all days exist in the output
-    for day in DAYS_ORDER:
-        if day not in day_classes:
-            day_classes[day] = []
-    
     # Extract student information from the page
     student_info = await extract_student_info(page)
     
@@ -842,16 +608,28 @@ async def extract_timetable_data(page, teacher_map, batch_size=3):
         "class": student_info.get("class")
     }
     
-    # Create the event-centric format only (removing traditional format)
-    timetable_data = {
+    # Create the final timetable data structure
+    timetable_data_dict = {
         "studentInfo": student_info,
         "events": all_events,
-        "weekInfo": week_info,
-        # Add a flag to indicate this is the new format
+        "weekInfo": {
+            "weekNumber": week_info.get("week_num"),
+            "year": week_info.get("year"),
+            "startDate": week_info.get("start_date"),
+            "endDate": week_info.get("end_date"),
+            "weekKey": week_info.get("week_key")
+        },
         "formatVersion": 2
     }
     
-    return timetable_data, week_info
+    # Convert to model if requested
+    if use_models:
+        timetable_model, success = dict_to_timetable_data(timetable_data_dict)
+        if success:
+            return timetable_model, week_info
+    
+    # Fall back to returning dictionary
+    return timetable_data_dict, week_info
 
 async def get_week_info(page):
     """

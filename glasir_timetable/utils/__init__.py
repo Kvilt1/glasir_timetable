@@ -2,6 +2,10 @@
 """
 Utility modules for the Glasir Timetable application.
 """
+import logging
+
+logger = logging.getLogger("glasir_timetable")
+
 from glasir_timetable.utils.formatting import (
     format_academic_year,
     get_timeslot_info,

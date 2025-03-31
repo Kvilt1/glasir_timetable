@@ -61,7 +61,8 @@ from glasir_timetable.utils.error_utils import (
     register_console_listener,
     handle_errors,
     resource_cleanup_context,
-    async_resource_cleanup_context
+    async_resource_cleanup_context,
+    configure_error_handling
 )
 
 # Import navigation utilities
@@ -72,17 +73,11 @@ from glasir_timetable.navigation import (
     get_week_directions
 )
 
-def is_new_format(timetable_data):
-    """
-    Check if the timetable data is in the new format.
-    
-    Args:
-        timetable_data (dict): The timetable data to check
-        
-    Returns:
-        bool: True if the data is in the new format, False otherwise
-    """
-    return isinstance(timetable_data, dict) and timetable_data.get("formatVersion") == 2
+from glasir_timetable.models import TimetableData
+from glasir_timetable.utils.model_adapters import timetable_data_to_dict
+
+# Import service factory for dependency injection
+from glasir_timetable.service_factory import create_services, get_service
 
 def generate_credentials_file(file_path, username, password):
     """
@@ -137,7 +132,12 @@ async def main():
     parser.add_argument('--log-level', type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], 
                         default='INFO', help='Set the logging level')
     parser.add_argument('--log-file', type=str, help='Log to a file instead of console')
-    parser.add_argument('--batch-size', type=int, default=3, help='Number of homework items to process in parallel (default: 3)')
+    parser.add_argument('--batch-size', type=int, default=5, help='Number of homework items to process in parallel (default: 5)')
+    parser.add_argument('--unlimited-batch-size', action='store_true', help='Process all homework items in a single batch (overrides --batch-size)')
+    parser.add_argument('--collect-error-details', action='store_true', help='Collect detailed error information')
+    parser.add_argument('--collect-tracebacks', action='store_true', help='Collect tracebacks for errors')
+    parser.add_argument('--enable-screenshots', action='store_true', help='Enable screenshots on errors')
+    parser.add_argument('--error-limit', type=int, default=100, help='Maximum number of errors to store per category')
     args = parser.parse_args()
     
     # Configure logging based on command-line arguments
@@ -215,14 +215,39 @@ async def main():
             # Register console listener
             register_console_listener(page)
             
-            async with error_screenshot_context(page, "main", "general_errors"):
-                # Login to Glasir
-                await login_to_glasir(page, credentials["username"], credentials["password"])
+            # Configure error handling based on command-line arguments
+            configure_error_handling(
+                collect_details=args.collect_error_details,
+                collect_tracebacks=args.collect_tracebacks,
+                error_limit=args.error_limit
+            )
+            
+            # Get service instances from service factory
+            services = create_services()
+            auth_service = services["auth_service"]
+            navigation_service = services["navigation_service"]
+            extraction_service = services["extraction_service"]
+            
+            # Set effective batch size (override with a large number if unlimited is set)
+            if args.unlimited_batch_size:
+                import sys
+                effective_batch_size = sys.maxsize  # Use maximum integer value
+                logger.info(f"Using unlimited batch size for homework extraction")
+            else:
+                effective_batch_size = args.batch_size
+                logger.info(f"Using batch size of {effective_batch_size} for homework extraction")
+            
+            async with error_screenshot_context(page, "main", "general_errors", take_screenshot=args.enable_screenshots):
+                # Login to Glasir using the authentication service
+                login_success = await auth_service.login(credentials["username"], credentials["password"], page)
+                if not login_success:
+                    logger.error("Authentication failed. Please check your credentials.")
+                    return
                 
                 # Initialize student_id for JavaScript navigation
                 student_id = None
                 
-                async with error_screenshot_context(page, "js_init", "javascript_errors"):
+                async with error_screenshot_context(page, "js_init", "javascript_errors", take_screenshot=args.enable_screenshots):
                     # Inject the JavaScript navigation script
                     await inject_timetable_script(page)
                     
@@ -232,12 +257,12 @@ async def main():
                         await test_javascript_integration(page)
                         logger.info("JavaScript integration test passed!")
                         
-                    # Get student ID (needed for navigation)
-                    student_id = await get_student_id(page)
+                    # Get student ID using the navigation service
+                    student_id = await navigation_service.get_student_id(page)
                     logger.info(f"Found student ID: {student_id}")
                 
-                # Extract dynamic teacher mapping from the page
-                teacher_map = await extract_teacher_map(page)
+                # Extract dynamic teacher mapping using the extraction service
+                teacher_map = await extraction_service.extract_teacher_map(page)
                 
                 # Process all weeks if requested
                 if args.all_weeks:
@@ -249,7 +274,7 @@ async def main():
                         output_dir=args.output_dir,
                         teacher_map=teacher_map,
                         student_id=student_id,
-                        batch_size=args.batch_size
+                        batch_size=effective_batch_size
                     )
                     
                     # Log results
@@ -260,49 +285,53 @@ async def main():
                     # Skip the rest of the processing since we've already handled all weeks
                     return
                 
-                # Extract and save current week data (unless we're only getting all weeks)
-                logger.info("Processing current week...")
-                
-                # Extract current week data
-                timetable_data, week_info = await extract_timetable_data(page, teacher_map, batch_size=args.batch_size)
-                
-                # Format filename with standardized format
-                start_date = week_info['start_date']
-                end_date = week_info['end_date']
-                
-                # Normalize dates and week number
-                start_date, end_date = normalize_dates(start_date, end_date, week_info['year'])
-                week_num = normalize_week_number(week_info['week_num'])
-                
-                # Generate filename
-                filename = generate_week_filename(week_info['year'], week_num, start_date, end_date)
-                output_path = os.path.join(args.output_dir, filename)
-                
-                # Save data to JSON file
-                save_json_data(timetable_data, output_path)
+                # Process specific weeks
+                else:
+                    # Extract current week's timetable data
+                    logger.info("Extracting current week's timetable data...")
                     
-                logger.info(f"Timetable data saved to {output_path}")
-                
-                # Store processed weeks to avoid duplicates
-                processed_weeks = {week_info['week_num']}
-                
-                # Process additional weeks if requested (forward and backward)
-                if args.weekforward > 0 or args.weekbackward > 0:
-                    logger.info(f"Processing additional weeks: {args.weekbackward} backward, {args.weekforward} forward")
+                    # Extract timetable data using HTML parsing
+                    try:
+                        # Extract current week's data
+                        timetable_data, week_info = await extract_timetable_data(page, teacher_map, batch_size=effective_batch_size)
+                    except Exception as e:
+                        logger.error(f"Error extracting current week's timetable data: {e}")
+                        return
                     
-                    # Get the list of week directions to process
-                    directions = await get_week_directions(args)
+                    # Format filename with standardized format
+                    start_date = week_info['start_date']
+                    end_date = week_info['end_date']
                     
-                    # Process all weeks in the specified directions
-                    await process_weeks(
-                        page=page,
-                        directions=directions,
-                        teacher_map=teacher_map,
-                        student_id=student_id,
-                        output_dir=args.output_dir,
-                        processed_weeks=processed_weeks,
-                        batch_size=args.batch_size
-                    )
+                    # Normalize dates and week number
+                    start_date, end_date = normalize_dates(start_date, end_date, week_info['year'])
+                    week_num = normalize_week_number(week_info['week_num'])
+                    
+                    # Generate filename
+                    filename = generate_week_filename(week_info['year'], week_num, start_date, end_date)
+                    output_path = os.path.join(args.output_dir, filename)
+                    
+                    # Save data to JSON file
+                    save_json_data(timetable_data, output_path)
+                    
+                    logger.info(f"Timetable data saved to {output_path}")
+                    
+                    # If additional weeks are requested, process them
+                    if args.weekforward > 0 or args.weekbackward > 0:
+                        logger.info(f"Processing additional weeks: {args.weekforward} forward, {args.weekbackward} backward")
+                        
+                        # Get the week directions
+                        directions = await get_week_directions(args)
+                        
+                        # Process all requested weeks
+                        additional_results = await process_weeks(
+                            page=page,
+                            directions=directions,
+                            teacher_map=teacher_map,
+                            student_id=student_id,
+                            output_dir=args.output_dir,
+                            processed_weeks={week_info['week_num']} if week_info else set(),
+                            batch_size=effective_batch_size
+                        )
 
             # Print summary of errors
             error_summary = get_error_summary()

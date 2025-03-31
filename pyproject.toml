@@ -1,0 +1,31 @@
+[tool.poetry]
+name = "glasir_timetable"
+version = "0.1.0"
+description = "Extracts timetable data from the Glasir website and saves it in JSON format"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+packages = [{include = "glasir_timetable"}]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+playwright = "^1.40.0"
+beautifulsoup4 = "^4.12.0"
+tqdm = "^4.66.0"
+requests = "^2.31.0"
+python-dotenv = "^1.0.0"
+pydantic = "^2.0.0"
+lxml = "^4.9.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.21.1"
+black = "^23.7.0"
+isort = "^5.12.0"
+mypy = "^1.5.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+glasir = "glasir_timetable.main:main" 

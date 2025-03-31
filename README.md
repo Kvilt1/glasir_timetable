@@ -8,7 +8,6 @@ This application extracts timetable data from the Glasir website and saves it in
 - Parallel homework extraction for improved performance
 - Supports multiple weeks extraction
 - Standardized JSON format compatible with calendar applications
-- Multiple output format options for better integration
 - Interactive credential prompting when no saved credentials are found
 - Automatic domain handling for Glasir usernames
 
@@ -27,7 +26,7 @@ python3 -m playwright install
 
 This project supports multiple dependency management options:
 
-1. **Traditional Method (pip)**: Uses `requirements.txt`
+1. **Standard Method (pip)**: Uses `requirements.txt`
 2. **Poetry (Recommended)**: Better dependency resolution via `pyproject.toml`
 3. **PDM**: Modern Python package manager via `pdm.toml`
 
@@ -35,8 +34,8 @@ For detailed installation instructions, troubleshooting guide, and advanced opti
 
 ### Dependencies
 
-- **Required**: playwright, beautifulsoup4, tqdm, requests
-- **Optional**: python-dotenv, pydantic
+- **Required**: playwright, beautifulsoup4, tqdm, requests, lxml, pydantic
+- **Optional**: python-dotenv
 - **Development**: pytest, pytest-asyncio, black, isort, mypy (Poetry/PDM only)
 
 ## Usage
@@ -68,10 +67,8 @@ python3 glasir_timetable/main.py --username your_username --password your_passwo
 - `--headless`: Run in headless mode (default: true)
 - `--log-level`: Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 - `--log-file`: Log to a file instead of console
-- `--use-new-format`: Save data in the new event-centric format (default)
-- `--use-old-format`: Save data in the old traditional format
-- `--save-dual-format`: Save data in both formats
-- `--batch-size`: Number of homework items to process in parallel (default: 3)
+- `--batch-size`: Number of homework items to process in parallel (default: 5)
+- `--unlimited-batch-size`: Process all homework items in a single batch for maximum performance
 
 ## Authentication
 
@@ -91,14 +88,11 @@ The application uses an optimized parallel approach to extract homework data:
 
 - Processes multiple homework items simultaneously for faster extraction
 - Configurable batch size (via `--batch-size` parameter) to balance performance and server load
-- Automatic fallback to sequential processing if parallel extraction fails
-- Comprehensive error handling and reporting
+- Optimized for performance with JavaScript-based extraction
 
-## Output Formats
+## Output Format
 
-### New Event-Centric Format (Default)
-
-The new event-centric format organizes data around individual events (classes), making it easier to integrate with calendar applications. This format uses camelCase property names and standardized ISO 8601 date formats.
+The application outputs data in a standardized event-centric format that organizes data around individual events (classes), making it easier to integrate with calendar applications. This format uses camelCase property names and standardized ISO 8601 date formats.
 
 ```json
 {
@@ -126,82 +120,12 @@ The new event-centric format organizes data around individual events (classes), 
   ],
   "weekInfo": {
     "weekNum": 13,
-    "startDate": "2025.03.24",
-    "endDate": "2025.03.30",
+    "startDate": "2025-03-24",
+    "endDate": "2025-03-30",
     "year": 2025
-  }
-}
-```
-
-### Traditional Format
-
-The traditional format organizes data by week and day, maintaining backward compatibility with existing applications:
-
-```json
-{
-  "Week 13: 2025.03.24 to 2025.03.30": {
-    "Monday": [
-      {
-        "name": "evf",
-        "level": "A",
-        "Year": "2024-2025",
-        "date": "24/3-2025",
-        "Teacher": "Teacher Name",
-        "Teacher short": "TN",
-        "Location": "608",
-        "Time slot": "2",
-        "Time": "10:05-11:35",
-        "Cancelled": false,
-        "Homework": "Homework description"
-      },
-      ...
-    ],
-    "Tuesday": [...],
-    ...
-  },
-  "student_info": {
-    "student_name": "Student Name",
-    "class": "Class"
-  }
-}
-```
-
-### Dual Format
-
-The dual format includes both traditional and event-centric structures in the same file, allowing for a smooth transition between formats:
-
-```json
-{
-  "traditional": {
-    // Traditional format as above
-  },
-  "eventCentric": {
-    // Event-centric format as above
   },
   "formatVersion": 2
 }
-```
-
-## Converting Existing JSON Files
-
-The converter script can transform existing traditional format JSON files to the new event-centric format:
-
-```bash
-python3 glasir_timetable/utils/converter.py --input path/to/file_or_directory --output-dir path/to/output
-```
-
-### Converter Options
-
-- `--input`: Path to input file or directory
-- `--output-dir`: Directory to save converted files
-- `--format`: Format to convert to (new=event-centric only, dual=both formats)
-- `--overwrite`: Overwrite original files
-- `--log-level`: Logging level (DEBUG, INFO, WARNING, ERROR)
-
-Example to convert all files in a directory:
-
-```bash
-python3 glasir_timetable/utils/converter.py --input glasir_timetable/weeks --output-dir glasir_timetable/weeks_new --format dual
 ```
 
 ## Integrating with Calendar Applications

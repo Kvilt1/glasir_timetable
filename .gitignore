@@ -7,6 +7,11 @@
 !main.py
 !glasir_timetable/
 !glasir_timetable/**
+!INSTALLATION.md
+!pdm.toml
+!pyproject.toml
+!requirements.txt
+!README.md
 
 # Ignore specific files inside glasir_timetable
 glasir_timetable/credentials.json

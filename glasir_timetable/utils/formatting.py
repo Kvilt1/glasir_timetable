@@ -42,26 +42,6 @@ def get_timeslot_info(start_col_index):
     else:
         return {"slot": "N/A", "time": "N/A"}  # Fallback
 
-def normalize_room_format(teacher, room, class_code=None):
-    """
-    Normalize room format to match expected output.
-    """
-    from glasir_timetable.constants import ROOM_FORMAT_MAPPING
-    
-    # Create the default format
-    default_format = f"{teacher} {room}"
-    
-    # Check if we have a special mapping for this room
-    if default_format in ROOM_FORMAT_MAPPING:
-        return ROOM_FORMAT_MAPPING[default_format]
-    
-    # If not, apply some general formatting rules
-    if "st." in room:
-        # For rooms with "st.", try to format like "Teacher St. Room"
-        return f"{teacher} {room.replace('st.', 'St.')}"
-    
-    return default_format 
-
 def normalize_week_number(week_num):
     """
     Normalize week numbers to standard 1-53 range.
@@ -150,7 +130,7 @@ def generate_week_filename(year, week_num, start_date, end_date):
                     end_year = year
             # Special case for format 2024.2025.01.05
             elif len(parts) >= 2 and parts[0] == "2024" and parts[1].startswith("2025"):
-                end_year = 2025
+                end_year = 2025  # Explicit handling
         else:
             end_year = year
         

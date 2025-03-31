@@ -217,8 +217,13 @@ async def export_all_weeks(
                     logger.error(f"Failed to take error screenshot: {str(screenshot_error)}")
             
             finally:
-                # Wait between requests
-                await asyncio.sleep(0.2)  # Short delay for JS-based navigation
+                # Instead of a fixed delay, wait for the DOM to be ready
+                try:
+                    # Wait for any pending DOM updates to complete
+                    await page.wait_for_selector('body', state='attached', timeout=100)
+                except Exception:
+                    # If timeout occurs, that's fine - just continue
+                    pass
                 
                 # Update progress
                 pbar.update(1)

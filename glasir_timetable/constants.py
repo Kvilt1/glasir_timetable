@@ -25,42 +25,6 @@ DAY_NAME_MAPPING = {
     "Sunnudagur": "Sunday"
 }
 
-# Mapping from subject codes to full names
-SUBJECT_CODE_MAPPING = {
-    "evf": "Evnafrøði",
-    "søg": "Søga",
-    "alf": "Alisfrøði",
-    "før": "Føroyskt",
-    "stø": "Støddfrøði",
-    "mik": "Mikrobiologi",
-    "rel": "Religion",
-    # Exam-related mappings
-    "Várroynd": "Spring Exam",
-    "Várroynd-før": "Spring Exam - Føroyskt",
-    "Várroynd-alf": "Spring Exam - Alisfrøði",
-    "Várroynd-stø": "Spring Exam - Støddfrøði",
-    "Várroynd-evf": "Spring Exam - Evnafrøði",
-    # Add more mappings as needed
-}
-
-# Special room formatting rules
-ROOM_FORMAT_MAPPING = {
-    "BIJ st. 608": "Bt.608",
-    "TJA st. 322": "TIA St. 322",
-    "PEY st. 606": "PEY 606",
-    "JOH st. 319": "JOH St. 319",
-    "BIJ st. NLH": "BL at NLH",
-    "TJA st. 510": "TIA st. 510",
-    "HSV st. 615": "HSV S. 615",
-    "TJA st. 419": "LIA S. 419",
-    "JBJ st. 418": "JBI st. 418",
-    "PEY st. 611": "PEY St 611",
-    "DTH st. 514": "rel St. 324",
-    "HSV st. 614": "HSV St. 615",
-    "JOH st. 514": "JOH st. 514",
-    # Add more mappings as needed
-}
-
 # Days order for sorting
 DAYS_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 

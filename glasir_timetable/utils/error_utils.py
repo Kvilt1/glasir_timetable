@@ -12,7 +12,7 @@ import traceback
 import asyncio
 from typing import Any, Callable, Dict, Optional, Type, TypeVar, Union, cast
 
-from glasir_timetable import logger, add_error
+from glasir_timetable import logger, add_error, error_config
 
 # Type definitions for better type hinting
 T = TypeVar('T')
@@ -43,6 +43,12 @@ _console_listener_registry = {
     'attached_pages': set(),
     'listeners': {}
 }
+
+def configure_error_handling(collect_details=False, collect_tracebacks=False, error_limit=100):
+    """Configure error handling behavior"""
+    error_config["collect_details"] = collect_details
+    error_config["collect_tracebacks"] = collect_tracebacks
+    error_config["error_limit"] = error_limit
 
 def handle_errors(
     error_category: str = "general_errors",
@@ -157,14 +163,15 @@ async def async_resource_cleanup_context(
                     logger.error(f"Error cleaning up resource {name}: {e}")
 
 @contextlib.asynccontextmanager
-async def error_screenshot_context(page, screenshot_name: str, error_type: str = "general_errors"):
+async def error_screenshot_context(page, screenshot_name: str, error_type: str = "general_errors", take_screenshot: bool = False):
     """
-    Context manager that takes a screenshot when an exception occurs.
+    Context manager that optionally takes a screenshot when an exception occurs.
     
     Args:
         page: The Playwright page object.
         screenshot_name: The base name for the screenshot file.
         error_type: The category of the error for reporting purposes.
+        take_screenshot: Whether to take a screenshot or not (default: False).
         
     Yields:
         None
@@ -174,21 +181,24 @@ async def error_screenshot_context(page, screenshot_name: str, error_type: str =
     except Exception as e:
         logger.error(f"Error: {e}")
         
-        # Take a screenshot for debugging
-        screenshot_path = f"error_{screenshot_name}.png"
-        logger.warning(f"Taking a screenshot for debugging: {screenshot_path}")
+        screenshot_path = None
+        if take_screenshot:
+            # Take a screenshot for debugging
+            screenshot_path = f"error_{screenshot_name}.png"
+            logger.warning(f"Taking a screenshot for debugging: {screenshot_path}")
+            
+            try:
+                await page.screenshot(path=screenshot_path)
+                logger.info(f"Screenshot saved to {screenshot_path}")
+            except Exception as screenshot_error:
+                logger.error(f"Failed to take screenshot: {screenshot_error}")
         
-        try:
-            await page.screenshot(path=screenshot_path)
-            logger.info(f"Screenshot saved to {screenshot_path}")
-        except Exception as screenshot_error:
-            logger.error(f"Failed to take screenshot: {screenshot_error}")
-        
-        # Add to error collection
-        add_error(error_type, str(e), {
-            "traceback": traceback.format_exc(),
-            "screenshot": screenshot_path
-        })
+        # Add to error collection - only include screenshot if taken
+        error_data = {"traceback": traceback.format_exc()}
+        if screenshot_path:
+            error_data["screenshot"] = screenshot_path
+            
+        add_error(error_type, str(e), error_data)
         
         # Re-raise the original exception
         raise

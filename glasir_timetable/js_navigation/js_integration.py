@@ -20,6 +20,9 @@ from glasir_timetable.utils.error_utils import (
     handle_errors,
     JavaScriptError
 )
+from glasir_timetable.models import TimetableData, StudentInfo, WeekInfo, Event
+from glasir_timetable.utils.model_adapters import dict_to_timetable_data
+from datetime import datetime
 
 # JavaScript content cache
 _JS_CACHE = None
@@ -198,17 +201,18 @@ async def navigate_to_week_js(page, week_offset, student_id=None):
         
         return week_info
 
-async def extract_timetable_data_js(page, teacher_map=None):
+async def extract_timetable_data_js(page, teacher_map=None, use_models=True):
     """
     Extract timetable data using the injected JavaScript functions.
     
     Args:
         page: The Playwright page object
         teacher_map: Optional dictionary mapping teacher initials to full names
+        use_models: Whether to return Pydantic models (default: True)
         
     Returns:
-        tuple: (timetable_data, week_info) where timetable_data is the structured data and
-               week_info contains week metadata
+        tuple: (timetable_data, week_info) where timetable_data is the structured data
+               (either a dict or TimetableData model) and week_info contains week metadata
                
     Raises:
         JavaScriptIntegrationError: If data extraction fails
@@ -244,21 +248,65 @@ async def extract_timetable_data_js(page, teacher_map=None):
                     class_info["teacherFullName"] = teacher_map[teacher_code]
         
         # Structure the data in the format expected by the application
-        timetable_data = {
-            "week_number": week_info.get("weekNumber"),
-            "year": week_info.get("year"),
-            "date_range": {
-                "start_date": week_info.get("startDate"),
-                "end_date": week_info.get("endDate")
+        timetable_data_dict = {
+            "studentInfo": {"studentName": "Unknown", "class": "Unknown"},  # Will be filled later
+            "events": [],  # Will be filled later
+            "weekInfo": {
+                "weekNumber": week_info.get("weekNumber"),
+                "year": week_info.get("year"),
+                "startDate": week_info.get("startDate"),
+                "endDate": week_info.get("endDate"),
+                "weekKey": f"{week_info.get('year', '')}_Week_{week_info.get('weekNumber', '')}"
             },
-            "classes": classes
+            "formatVersion": 2
         }
         
-        # Ensure essential fields are present
-        if not timetable_data["week_number"]:
-            logger.warning("WARNING: Week number is missing in extracted data")
+        # Process classes into events
+        events = []
+        for class_info in classes:
+            # Convert class info to event format
+            event = {
+                "title": class_info.get("subject", ""),
+                "level": class_info.get("level", ""),
+                "year": class_info.get("academicYear", ""),
+                "date": class_info.get("date", ""),
+                "day": class_info.get("day", ""),
+                "teacher": class_info.get("teacherFullName", ""),
+                "teacherShort": class_info.get("teacher", ""),
+                "location": class_info.get("location", ""),
+                "timeSlot": class_info.get("timeSlot", ""),
+                "startTime": class_info.get("startTime", ""),
+                "endTime": class_info.get("endTime", ""),
+                "timeRange": class_info.get("timeRange", ""),
+                "cancelled": class_info.get("cancelled", False),
+                "lessonId": class_info.get("lessonId", None)
+            }
+            events.append(event)
         
-        return timetable_data, {
+        # Update events in the data structure
+        timetable_data_dict["events"] = events
+        
+        # Extract student info if available
+        try:
+            student_info = await extract_student_info_js(page)
+            if student_info:
+                timetable_data_dict["studentInfo"] = student_info
+        except Exception as e:
+            logger.warning(f"Failed to extract student info: {e}")
+        
+        # Convert to model if requested
+        if use_models:
+            timetable_model, success = dict_to_timetable_data(timetable_data_dict)
+            if success:
+                return timetable_model, {
+                    "week_num": week_info.get("weekNumber"),
+                    "year": week_info.get("year"),
+                    "start_date": week_info.get("startDate"),
+                    "end_date": week_info.get("endDate")
+                }
+        
+        # Fall back to returning dictionary
+        return timetable_data_dict, {
             "week_num": week_info.get("weekNumber"),
             "year": week_info.get("year"),
             "start_date": week_info.get("startDate"),
@@ -311,6 +359,7 @@ async def extract_homework_content_js(page, lesson_id):
 async def extract_all_homework_content_js(page, lesson_ids, batch_size=3):
     """
     Extract homework content for multiple lessons using JavaScript.
+    Uses only parallel extraction without sequential fallback.
     
     Args:
         page: The Playwright page object
@@ -333,57 +382,24 @@ async def extract_all_homework_content_js(page, lesson_ids, batch_size=3):
     # Log the start of extraction
     logger.info(f"Extracting homework for {len(lesson_ids)} lessons in parallel (batch size: {batch_size})...")
     
-    try:
-        # Use the parallel JavaScript function with the specified batch size
-        homework_data = await evaluate_js_safely(
-            page,
-            f"glasirTimetable.extractAllHomeworkContentParallel({json.dumps(lesson_ids)}, {batch_size})",
-            error_message=f"Failed to extract homework in parallel for {len(lesson_ids)} lessons"
-        )
+    # Use the parallel JavaScript function with the specified batch size
+    homework_data = await evaluate_js_safely(
+        page,
+        f"glasirTimetable.extractAllHomeworkContentParallel({json.dumps(lesson_ids)}, {batch_size})",
+        error_message=f"Failed to extract homework in parallel for {len(lesson_ids)} lessons"
+    )
+    
+    if homework_data:
+        # Count successes (non-null, non-error values)
+        success_count = sum(1 for content in homework_data.values() 
+                           if content and not (isinstance(content, str) and content.startswith("Error:")))
         
-        if homework_data:
-            # Count successes (non-null, non-error values)
-            success_count = sum(1 for content in homework_data.values() 
-                               if content and not (isinstance(content, str) and content.startswith("Error:")))
-            
-            logger.info(f"Successfully extracted {success_count} of {len(lesson_ids)} homework items in parallel")
-        else:
-            logger.warning("No homework data returned from parallel extraction")
-            homework_data = {}
-            
-        return homework_data
-        
-    except Exception as e:
-        logger.error(f"Error during parallel homework extraction: {e}")
-        add_error("homework_errors", f"Failed to extract homework in parallel", str(e))
-        
-        # Fall back to sequential extraction if parallel fails
-        logger.info("Falling back to sequential extraction method...")
-        
+        logger.info(f"Successfully extracted {success_count} of {len(lesson_ids)} homework items in parallel")
+    else:
+        logger.warning("No homework data returned from parallel extraction")
         homework_data = {}
-        # Track extraction progress
-        from tqdm import tqdm
         
-        for lesson_id in tqdm(lesson_ids, desc="Extracting homework (fallback)"):
-            try:
-                # Extract homework for this lesson
-                homework = await extract_homework_content_js(page, lesson_id)
-                
-                # Store result (even if empty)
-                homework_data[lesson_id] = homework
-                
-                # Small delay to avoid overloading the server
-                await asyncio.sleep(0.2)
-                
-            except Exception as inner_e:
-                logger.error(f"Error extracting homework for lesson {lesson_id}: {inner_e}")
-                add_error("homework_errors", f"Failed to extract homework for lesson {lesson_id}", str(inner_e))
-                
-                # Store null for this lesson
-                homework_data[lesson_id] = None
-        
-        logger.info(f"Extracted homework data for {len(homework_data)} lessons using fallback method")
-        return homework_data
+    return homework_data
 
 async def test_javascript_integration(page):
     """
@@ -435,6 +451,45 @@ async def test_javascript_integration(page):
         logger.info("JavaScript integration test passed")
         return True
 
+async def get_current_week_info(page):
+    """
+    Get information about the currently displayed week using JavaScript.
+    
+    Args:
+        page: The Playwright page object
+        
+    Returns:
+        dict: Information about the current week
+        
+    Raises:
+        JavaScriptIntegrationError: If week info extraction fails
+    """
+    async with error_screenshot_context(page, "get_current_week_info", "extraction_errors"):
+        week_info = await evaluate_js_safely(
+            page,
+            "glasirTimetable.extractWeekInfo()",
+            error_message="Failed to extract current week information"
+        )
+        
+        if not week_info:
+            logger.warning("Could not extract week info from page")
+            return {
+                "week_num": None,
+                "year": datetime.now().year,
+                "start_date": None,
+                "end_date": None
+            }
+        
+        # Convert to expected format with correct keys
+        result = {
+            "week_num": week_info.get("weekNumber"),
+            "year": week_info.get("year", datetime.now().year),
+            "start_date": week_info.get("startDate"),
+            "end_date": week_info.get("endDate")
+        }
+        
+        return result
+
 # Export all functions that should be importable
 __all__ = [
     "JavaScriptIntegrationError",
@@ -446,5 +501,6 @@ __all__ = [
     "return_to_baseline_js",
     "test_javascript_integration",
     "extract_homework_content_js",
-    "extract_all_homework_content_js"  # Add the new function to exports
+    "extract_all_homework_content_js",
+    "get_current_week_info"
 ] 

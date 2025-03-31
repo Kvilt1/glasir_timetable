@@ -9,6 +9,7 @@ import os
 import asyncio
 from typing import List, Dict, Any, Optional, Callable, Set
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from glasir_timetable import logger
 from glasir_timetable.extractors import extract_timetable_data
@@ -24,6 +25,8 @@ from glasir_timetable.utils import (
     save_json_data
 )
 from glasir_timetable.utils.error_utils import error_screenshot_context
+from glasir_timetable.models import TimetableData
+from glasir_timetable.utils.model_adapters import dict_to_timetable_data
 
 
 @asynccontextmanager
@@ -52,7 +55,7 @@ async def with_week_navigation(page, week_offset, student_id):
             logger.error(f"Error returning to baseline: {e}")
 
 
-async def navigate_and_extract(page, week_offset, teacher_map, student_id, batch_size=3):
+async def navigate_and_extract(page, week_offset, teacher_map, student_id, batch_size=3, use_models=True):
     """
     Navigate to a specific week and extract its timetable data.
     
@@ -62,22 +65,27 @@ async def navigate_and_extract(page, week_offset, teacher_map, student_id, batch
         teacher_map: Dictionary mapping teacher initials to full names
         student_id: The student ID GUID
         batch_size: Number of homework items to process in parallel (default: 3)
+        use_models: Whether to return Pydantic models (default: True)
         
     Returns:
         tuple: (timetable_data, week_info) if successful, (None, None) if navigation failed
+              timetable_data can be either a TimetableData model or a dictionary
     """
     async with with_week_navigation(page, week_offset, student_id) as week_info:
         if not week_info:
             return None, None
             
-        # Extract timetable data
-        timetable_data, week_details = await extract_timetable_data(page, teacher_map, batch_size=batch_size)
+        # Extract timetable data with model support
+        timetable_data, week_details = await extract_timetable_data(
+            page, teacher_map, batch_size=batch_size, use_models=use_models
+        )
         return timetable_data, week_info
 
 
-async def process_single_week(page, week_offset, teacher_map, student_id, output_dir, processed_weeks=None, batch_size=3):
+async def process_single_week(page, week_offset, teacher_map, student_id, output_dir, 
+                             processed_weeks=None, batch_size=3, use_models=True):
     """
-    Process a single week - navigate, extract, and save data.
+    Process a single week, extract and save its timetable data.
     
     Args:
         page: The Playwright page object
@@ -85,53 +93,71 @@ async def process_single_week(page, week_offset, teacher_map, student_id, output
         teacher_map: Dictionary mapping teacher initials to full names
         student_id: The student ID GUID
         output_dir: Directory to save output files
-        processed_weeks: Optional set of already processed week numbers to avoid duplicates
-        batch_size: Number of homework items to process in parallel (default: 3)
+        processed_weeks: Set of already processed week numbers (to avoid duplicates)
+        batch_size: Number of homework items to process in parallel
+        use_models: Whether to use Pydantic models (default: True)
         
     Returns:
-        dict: Week information if successful, None if failed or already processed
+        bool: True if successful, False if failed or already processed
     """
     if processed_weeks is None:
         processed_weeks = set()
-        
-    context_name = "forward_week" if week_offset > 0 else "backward_week" if week_offset < 0 else "current_week"
     
-    async with error_screenshot_context(page, f"{context_name}_{abs(week_offset)}", "navigation_errors"):
-        try:
-            # Navigate and extract data
-            timetable_data, week_info = await navigate_and_extract(page, week_offset, teacher_map, student_id, batch_size=batch_size)
-            
-            # Skip if navigation failed or already processed
-            if not week_info or week_info.get('weekNumber') in processed_weeks:
-                logger.info(f"Week navigation failed or already processed (offset {week_offset}), skipping.")
-                return None
-                
-            # Get standardized week information
-            week_num = week_info.get('weekNumber')
-            year = week_info.get('year')
-            start_date = week_info.get('startDate')
-            end_date = week_info.get('endDate')
-            
-            # Mark as processed
-            processed_weeks.add(week_num)
-            
-            # Normalize dates and week number
-            start_date, end_date = normalize_dates(start_date, end_date, year)
-            week_num = normalize_week_number(week_num)
-            
-            # Generate filename
-            filename = generate_week_filename(year, week_num, start_date, end_date)
-            output_path = os.path.join(output_dir, filename)
-            
-            # Save data to JSON file
-            save_json_data(timetable_data, output_path)
-            
-            logger.info(f"Timetable data for Week {week_num} saved to {output_path}")
-            return week_info
-            
-        except Exception as e:
-            logger.error(f"Error processing week (offset {week_offset}): {e}")
-            return None
+    # Extract timetable data with model support
+    timetable_data, week_info = await navigate_and_extract(
+        page, week_offset, teacher_map, student_id, batch_size, use_models=use_models
+    )
+    
+    if not timetable_data:
+        return False
+    
+    # Get week info depending on whether we have a model or dictionary
+    if isinstance(timetable_data, TimetableData):
+        # Extract from model
+        week_num = timetable_data.week_info.week_number
+        start_date = timetable_data.week_info.start_date
+        end_date = timetable_data.week_info.end_date
+        year = timetable_data.week_info.year
+        
+        # Also update the week_info dictionary to match
+        week_info = {
+            "week_num": week_num,
+            "start_date": start_date,
+            "end_date": end_date,
+            "year": year
+        }
+    else:
+        # Extract from week_info for dictionary case
+        week_num = week_info.get('week_num', 0)
+        start_date = week_info.get('start_date', '')
+        end_date = week_info.get('end_date', '')
+        year = week_info.get('year', datetime.now().year)
+    
+    # Skip if we've already processed this week
+    if week_num in processed_weeks:
+        logger.info(f"Skipping week {week_num} (already processed)")
+        return False
+    
+    # Add to processed weeks
+    processed_weeks.add(week_num)
+    
+    # Normalize dates and week number
+    start_date, end_date = normalize_dates(start_date, end_date, year)
+    week_num = normalize_week_number(week_num)
+    
+    # Generate filename with standardized format
+    filename = generate_week_filename(year, week_num, start_date, end_date)
+    output_path = os.path.join(output_dir, filename)
+    
+    # Save data to JSON file
+    result = save_json_data(timetable_data, output_path)
+    
+    if result:
+        logger.info(f"Saved week {week_num} data to {output_path}")
+        return True
+    else:
+        logger.error(f"Failed to save week {week_num} data")
+        return False
 
 
 async def process_weeks(page, directions, teacher_map, student_id, output_dir, processed_weeks=None, batch_size=3):

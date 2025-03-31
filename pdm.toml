@@ -1,0 +1,31 @@
+[project]
+name = "glasir_timetable"
+version = "0.1.0"
+description = "Extracts timetable data from the Glasir website and saves it in JSON format"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"},
+]
+dependencies = [
+    "playwright>=1.40.0",
+    "beautifulsoup4>=4.12.0",
+    "tqdm>=4.66.0",
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+    "lxml>=4.9.0",
+]
+requires-python = ">=3.8"
+readme = "README.md"
+license = {text = "MIT"}
+
+[tool.pdm.dev-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.1",
+    "black>=23.7.0",
+    "isort>=5.12.0",
+    "mypy>=1.5.1",
+]
+
+[project.scripts]
+glasir = "glasir_timetable.main:main" 
