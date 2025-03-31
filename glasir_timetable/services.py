@@ -19,6 +19,12 @@ from playwright.async_api import Page
 from glasir_timetable import logger, add_error
 from glasir_timetable.models import TimetableData, Event, WeekInfo
 from glasir_timetable.domain import Teacher, Homework, Lesson, Timetable
+from glasir_timetable.cookie_auth import (
+    check_and_refresh_cookies,
+    set_cookies_in_playwright_context,
+    create_requests_session_with_cookies,
+    test_cookies_with_requests
+)
 
 class AuthenticationService(abc.ABC):
     """
@@ -147,12 +153,13 @@ class ExtractionService(abc.ABC):
         pass
     
     @abc.abstractmethod
-    async def extract_teacher_map(self, page: Page) -> Dict[str, str]:
+    async def extract_teacher_map(self, page: Page, force_update: bool = False) -> Dict[str, str]:
         """
         Extract the teacher mapping (initials to full names) from the page.
         
         Args:
             page: The Playwright page object
+            force_update: Whether to force an update of the teacher mapping cache
             
         Returns:
             dict: Mapping of teacher initials to full names
@@ -166,7 +173,7 @@ class ExtractionService(abc.ABC):
         
         Args:
             page: The Playwright page object
-            lesson_id: The unique ID of the lesson
+            lesson_id: The ID of the lesson
             subject_code: The subject code for better error reporting
             
         Returns:
@@ -398,6 +405,138 @@ class PlaywrightAuthenticationService(AuthenticationService):
             logger.error(f"Error during logout: {e}")
             return False
 
+class CookieAuthenticationService(AuthenticationService):
+    """
+    Authentication service implementation that uses cookie-based authentication
+    with fallback to regular Playwright authentication.
+    """
+    
+    def __init__(self, cookie_path: str = "cookies.json", auto_refresh: bool = True):
+        """
+        Initialize the cookie-based authentication service.
+        
+        Args:
+            cookie_path: Path to save/load cookies
+            auto_refresh: Whether to automatically refresh expired cookies
+        """
+        self.cookie_path = cookie_path
+        self.auto_refresh = auto_refresh
+        # Create a regular authentication service as fallback
+        self.regular_auth_service = PlaywrightAuthenticationService()
+        # Keep track of the requests session when created
+        self.requests_session = None
+        # Store cookie data
+        self.cookie_data = None
+    
+    async def login(self, username: str, password: str, page: Page) -> bool:
+        """
+        Authenticate using cookies if possible, falling back to regular login.
+        
+        Args:
+            username: Username for login
+            password: Password for login
+            page: Playwright page object
+            
+        Returns:
+            bool: True if authentication successful
+        """
+        try:
+            # Try cookie-based authentication first
+            logger.info("Attempting cookie-based authentication...")
+            
+            if self.auto_refresh:
+                # This will check if cookies exist/valid and refresh them if needed
+                self.cookie_data = await check_and_refresh_cookies(
+                    page=page,
+                    username=username,
+                    password=password,
+                    cookie_path=self.cookie_path
+                )
+                
+                if self.cookie_data:
+                    # Set cookies in browser context
+                    await set_cookies_in_playwright_context(page, self.cookie_data)
+                    
+                    # Navigate to timetable page to verify
+                    await page.goto("https://tg.glasir.fo/132n/")
+                    
+                    # Check if we're logged in by looking for the timetable
+                    try:
+                        await page.wait_for_selector("table.time_8_16", state="visible", timeout=10000)
+                        logger.info("Successfully authenticated using cookies!")
+                        
+                        # Create requests session
+                        self.requests_session = create_requests_session_with_cookies(self.cookie_data)
+                        
+                        return True
+                    except Exception as e:
+                        logger.warning(f"Cookie authentication failed: {e}")
+                        # Fall back to regular login
+            
+            # If we get here, cookie authentication failed or was disabled
+            logger.info("Using regular authentication...")
+            return await self.regular_auth_service.login(username, password, page)
+            
+        except Exception as e:
+            logger.error(f"Authentication error: {e}")
+            add_error("authentication", str(e))
+            return False
+    
+    async def is_authenticated(self, page: Page) -> bool:
+        """
+        Check if the current session is authenticated.
+        
+        Args:
+            page: Playwright page object
+            
+        Returns:
+            bool: True if authenticated
+        """
+        # First try checking with the requests session if available
+        if self.requests_session and self.cookie_data:
+            try:
+                # Quick test with requests
+                return await test_cookies_with_requests(self.cookie_data)
+            except Exception as e:
+                logger.warning(f"Error checking cookies with requests: {e}")
+        
+        # Fall back to regular check
+        return await self.regular_auth_service.is_authenticated(page)
+    
+    async def logout(self, page: Page) -> bool:
+        """
+        Log out the current user and invalidate cookies.
+        
+        Args:
+            page: Playwright page object
+            
+        Returns:
+            bool: True if logout successful
+        """
+        # Clear requests session
+        self.requests_session = None
+        self.cookie_data = None
+        
+        # Delete cookie file if it exists
+        if os.path.exists(self.cookie_path):
+            try:
+                os.remove(self.cookie_path)
+                logger.info(f"Removed cookie file: {self.cookie_path}")
+            except Exception as e:
+                logger.warning(f"Failed to remove cookie file: {e}")
+        
+        # Use regular logout
+        return await self.regular_auth_service.logout(page)
+    
+    def get_requests_session(self):
+        """
+        Get the requests session with cookies set.
+        
+        Returns:
+            requests.Session: Session with cookies
+        """
+        return self.requests_session
+
 class PlaywrightNavigationService(NavigationService):
     """
     Playwright-based implementation of the NavigationService interface.
@@ -530,12 +669,13 @@ class PlaywrightExtractionService(ExtractionService):
             logger.error(f"Error extracting timetable data: {e}")
             return None
     
-    async def extract_teacher_map(self, page: Page) -> Dict[str, str]:
+    async def extract_teacher_map(self, page: Page, force_update: bool = False) -> Dict[str, str]:
         """
-        Extract the teacher mapping from the page.
+        Extract the teacher mapping (initials to full names) from the page.
         
         Args:
             page: The Playwright page object
+            force_update: Whether to force an update of the teacher mapping cache
             
         Returns:
             dict: Mapping of teacher initials to full names
@@ -544,7 +684,7 @@ class PlaywrightExtractionService(ExtractionService):
             from glasir_timetable.extractors.teacher_map import extract_teacher_map
             
             # Extract teacher map
-            teacher_map = await extract_teacher_map(page)
+            teacher_map = await extract_teacher_map(page, use_cache=not force_update)
             return teacher_map
         except Exception as e:
             logger.error(f"Error extracting teacher map: {e}")
@@ -556,27 +696,40 @@ class PlaywrightExtractionService(ExtractionService):
         
         Args:
             page: The Playwright page object
-            lesson_id: The unique ID of the lesson
+            lesson_id: The ID of the lesson
             subject_code: The subject code for better error reporting
             
         Returns:
             Optional[Homework]: Homework data if successful, None otherwise
         """
         try:
-            from glasir_timetable.extractors.timetable import extract_homework_content
+            from glasir_timetable.api_client import fetch_homework_for_lesson, parse_individual_lesson_response
             
-            # Extract homework content
-            result = await extract_homework_content(page, lesson_id, subject_code)
+            # Get cookies from page for API request
+            cookies = {}
+            for cookie in await page.context.cookies():
+                cookies[cookie['name']] = cookie['value']
             
-            if result and result.get("success") and result.get("content"):
-                # Create Homework object with the extracted content
-                homework = Homework(
-                    lessonId=lesson_id,
-                    subject=subject_code,
-                    content=result["content"],
-                    date=datetime.now().strftime("%Y-%m-%d")
-                )
-                return homework
+            # Extract dynamic lname value if possible
+            from glasir_timetable.api_client import extract_lname_from_page
+            lname_value = await extract_lname_from_page(page)
+            
+            # Use API-based extraction
+            html_content = await fetch_homework_for_lesson(cookies, lesson_id, lname_value)
+            
+            if html_content:
+                # Parse the content
+                homework_text = parse_individual_lesson_response(html_content)
+                
+                if homework_text:
+                    # Create Homework object with the extracted content
+                    homework = Homework(
+                        lessonId=lesson_id,
+                        subject=subject_code,
+                        content=homework_text,
+                        date=datetime.now().strftime("%Y-%m-%d")
+                    )
+                    return homework
                 
             return None
         except Exception as e:
@@ -599,10 +752,23 @@ class PlaywrightExtractionService(ExtractionService):
             dict: Mapping of lesson IDs to homework data
         """
         try:
-            from glasir_timetable.js_navigation.js_integration import extract_all_homework_content_js
+            from glasir_timetable.api_client import fetch_homework_for_lessons, extract_lname_from_page
             
-            # Extract all homework content in parallel
-            content_dict = await extract_all_homework_content_js(page, lesson_ids, batch_size)
+            # Get cookies from page for API request
+            cookies = {}
+            for cookie in await page.context.cookies():
+                cookies[cookie['name']] = cookie['value']
+            
+            # Extract dynamic lname value if possible
+            lname_value = await extract_lname_from_page(page)
+            
+            # Use API-based extraction with parallel requests
+            content_dict = await fetch_homework_for_lessons(
+                cookies=cookies,
+                lesson_ids=lesson_ids,
+                max_concurrent=batch_size,
+                lname_value=lname_value
+            )
             
             # Convert to Homework objects
             result = {}

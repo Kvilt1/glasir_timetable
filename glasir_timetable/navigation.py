@@ -34,7 +34,7 @@ from glasir_timetable.utils.model_adapters import dict_to_timetable_data
 
 
 @asynccontextmanager
-async def with_week_navigation(page, week_offset, student_id):
+async def with_week_navigation(page, week_offset, student_id, return_to_baseline=True):
     """
     Context manager for safely navigating to a week and ensuring return to baseline.
     
@@ -42,6 +42,7 @@ async def with_week_navigation(page, week_offset, student_id):
         page: The Playwright page object
         week_offset: The offset from the current week (0=current, 1=next, -1=previous)
         student_id: The student ID GUID
+        return_to_baseline: Whether to return to current week (baseline) after operation (default: True)
         
     Yields:
         dict: Information about the week that was navigated to, or None if navigation failed
@@ -52,11 +53,12 @@ async def with_week_navigation(page, week_offset, student_id):
         week_info = await navigate_to_week_js(page, week_offset, student_id)
         yield week_info
     finally:
-        # Always return to baseline
-        try:
-            await return_to_baseline_js(page, 0, student_id)
-        except Exception as e:
-            logger.error(f"Error returning to baseline: {e}")
+        # Return to baseline only if requested
+        if return_to_baseline:
+            try:
+                await return_to_baseline_js(page, 0, student_id)
+            except Exception as e:
+                logger.error(f"Error returning to baseline: {e}")
 
 
 async def navigate_and_extract(page, week_offset, teacher_map, student_id, api_cookies=None, use_models=True):

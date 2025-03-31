@@ -317,7 +317,7 @@ async def export_all_weeks_concurrent(
             
             try:
                 # Extract timetable data without fetching homework yet
-                async with with_week_navigation(page, v_value, student_id) as week_info:
+                async with with_week_navigation(page, v_value, student_id, return_to_baseline=False) as week_info:
                     # Skip if navigation failed
                     if not week_info:
                         error_msg = f"Failed to navigate to week {week_num} (v={v_value})"
@@ -479,7 +479,7 @@ async def export_all_weeks_sequential(
             
             try:
                 # Use the with_week_navigation context manager for safer navigation
-                async with with_week_navigation(page, v_value, student_id) as week_info:
+                async with with_week_navigation(page, v_value, student_id, return_to_baseline=False) as week_info:
                     # Skip if navigation failed
                     if not week_info:
                         error_msg = f"Failed to navigate to week {week_num} (v={v_value})"

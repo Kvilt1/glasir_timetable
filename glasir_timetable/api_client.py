@@ -14,6 +14,10 @@ from typing import Dict, List, Optional, Any
 from urllib.parse import urlencode
 from bs4 import BeautifulSoup
 import re
+import os
+
+from glasir_timetable import logger
+from glasir_timetable.extractors.homework_parser import clean_homework_text
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +136,7 @@ async def _process_lesson(cookies: Dict[str, str], lesson_id: str, semaphore: as
 async def fetch_homework_for_lessons(
     cookies: Dict[str, str],
     lesson_ids: List[str],
-    max_concurrent: int = 5,  # Limit concurrent requests to avoid overwhelming server
+    max_concurrent: int = 10,  # Limit concurrent requests to avoid overwhelming server
     lname_value: str = None
 ) -> Dict[str, str]:
     """
@@ -192,13 +196,13 @@ def parse_individual_lesson_response(html_content: str) -> Optional[str]:
         if paragraphs:
             # Extract text from all relevant paragraphs
             homework_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-            return homework_text
+            return clean_homework_text(homework_text)
         
         # Fallback: try to find any paragraphs inside the response
         all_paragraphs = soup.find_all('p')
         if all_paragraphs:
             homework_text = "\n".join(p.get_text(strip=True) for p in all_paragraphs if p.get_text(strip=True))
-            return homework_text
+            return clean_homework_text(homework_text)
             
     except Exception as e:
         logger.error(f"Error parsing individual lesson response: {e}")

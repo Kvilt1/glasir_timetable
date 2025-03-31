@@ -27,6 +27,14 @@ from tqdm import tqdm
 from playwright.async_api import async_playwright
 from glasir_timetable import logger, setup_logging, stats, update_stats, error_collection, get_error_summary, clear_errors, add_error
 from glasir_timetable.auth import login_to_glasir
+from glasir_timetable.cookie_auth import (
+    check_and_refresh_cookies,
+    set_cookies_in_playwright_context,
+    create_requests_session_with_cookies,
+    test_cookies_with_requests,
+    load_cookies,
+    estimate_cookie_expiration
+)
 from glasir_timetable.extractors import (
     extract_teacher_map, 
     extract_timetable_data
@@ -138,6 +146,12 @@ async def main():
     parser.add_argument('--enable-screenshots', action='store_true', help='Enable screenshots on errors')
     parser.add_argument('--error-limit', type=int, default=100, help='Maximum number of errors to store per category')
     parser.add_argument('--use-api', action='store_true', help='Use direct API calls instead of JavaScript-based navigation')
+    parser.add_argument('--use-cookies', action='store_true', default=True, help='Use cookie-based authentication when possible')
+    parser.add_argument('--cookie-path', type=str, default='cookies.json', help='Path to save/load cookies')
+    parser.add_argument('--no-cookie-refresh', action='store_false', dest='refresh_cookies', default=True, 
+                      help='Do not refresh cookies even if they are expired')
+    parser.add_argument('--teacherupdate', action='store_true', help='Update the teacher mapping cache at the start of the script')
+    parser.add_argument('--skip-timetable', action='store_true', help='Skip timetable extraction, useful when only updating teachers')
     args = parser.parse_args()
     
     # Configure logging based on command-line arguments
@@ -190,6 +204,13 @@ async def main():
         os.makedirs(args.output_dir, exist_ok=True)
         logger.debug(f"Created output directory: {args.output_dir}")
     
+    # Check cookie expiration at startup
+    if args.use_cookies:
+        cookie_data = load_cookies(args.cookie_path)
+        if cookie_data:
+            expiration_msg = estimate_cookie_expiration(cookie_data)
+            logger.info(f"Cookie status: {expiration_msg}")
+    
     # Initialize Playwright
     async with async_playwright() as p:
         # Setup resources with cleanup context
@@ -200,8 +221,6 @@ async def main():
         }
         
         # Define cleanup functions
-        # Note: The application now uses sequential homework extraction - first trying the bulk API
-        # then falling back to individual lesson requests when bulk API fails to return data
         cleanup_funcs = {
             "browser": lambda browser: asyncio.create_task(browser.close())
         }
@@ -224,24 +243,44 @@ async def main():
                 error_limit=args.error_limit
             )
             
-            # Get service instances from service factory
-            services = create_services()
+            # Get service instances from service factory with cookie configuration
+            service_config = {
+                "use_cookie_auth": args.use_cookies,
+                "cookie_path": args.cookie_path,
+                "auto_refresh_cookies": args.refresh_cookies
+            }
+            services = create_services(config=service_config)
             auth_service = services["auth_service"]
             navigation_service = services["navigation_service"]
             extraction_service = services["extraction_service"]
             
             async with error_screenshot_context(page, "main", "general_errors", take_screenshot=args.enable_screenshots):
-                # Login to Glasir using the authentication service
-                login_success = await auth_service.login(credentials["username"], credentials["password"], page)
+                # Let the auth_service handle authentication (it will use cookies if configured)
+                login_success = await auth_service.login(
+                    credentials["username"], 
+                    credentials["password"], 
+                    page
+                )
+                
                 if not login_success:
                     logger.error("Authentication failed. Please check your credentials.")
                     return
                 
-                # Extract cookies for API calls
+                # Get API cookies from auth_service if it's a CookieAuthenticationService
                 api_cookies = {}
-                browser_cookies = await page.context.cookies()
-                api_cookies = {cookie['name']: cookie['value'] for cookie in browser_cookies}
-                logger.info(f"Extracted {len(api_cookies)} cookies for API requests")
+                if hasattr(auth_service, "get_requests_session") and auth_service.get_requests_session():
+                    # We have a requests session with cookies
+                    logger.info("Using cookies from cookie authentication service")
+                    # If needed, get cookies from the session
+                    if hasattr(auth_service, "cookie_data") and auth_service.cookie_data:
+                        api_cookies = {cookie['name']: cookie['value'] 
+                                     for cookie in auth_service.cookie_data['cookies']}
+                else:
+                    # Fall back to extracting cookies from the browser
+                    browser_cookies = await page.context.cookies()
+                    api_cookies = {cookie['name']: cookie['value'] for cookie in browser_cookies}
+                
+                logger.info(f"Using {len(api_cookies)} cookies for API requests")
                 
                 # Initialize student_id for JavaScript navigation
                 student_id = None
@@ -261,7 +300,12 @@ async def main():
                     logger.info(f"Found student ID: {student_id}")
                 
                 # Extract dynamic teacher mapping using the extraction service
-                teacher_map = await extraction_service.extract_teacher_map(page)
+                teacher_map = await extraction_service.extract_teacher_map(page, force_update=args.teacherupdate)
+                
+                # If we're only updating the teacher cache, we can exit now
+                if args.teacherupdate and args.skip_timetable:
+                    logger.info("Teacher mapping updated. Skipping timetable extraction as requested.")
+                    return
                 
                 # Process all weeks if requested
                 if args.all_weeks:
@@ -301,7 +345,6 @@ async def main():
                     if export_results['errors']:
                         logger.warning(f"Encountered {len(export_results['errors'])} errors during extraction.")
                     
-                    # Skip
                     return
                 
                 # Process specific weeks
@@ -325,6 +368,26 @@ async def main():
                             timetable_data, week_info, _ = await navigate_and_extract(
                                 page, 0, teacher_map, student_id, api_cookies
                             )
+                        
+                        # Check if we successfully retrieved the week info
+                        if not week_info:
+                            logger.error("Failed to retrieve week information. The page may need to be refreshed.")
+                            # Try to refresh the page and try again
+                            logger.info("Attempting to reload the page and retry...")
+                            await page.reload(wait_until="networkidle")
+                            await page.wait_for_timeout(2000)  # Wait an extra 2 seconds for stability
+                            
+                            # Reinject the JavaScript
+                            await inject_timetable_script(page)
+                            
+                            # Try extraction once more
+                            timetable_data, week_info, _ = await navigate_and_extract(
+                                page, 0, teacher_map, student_id, api_cookies
+                            )
+                            
+                            if not week_info:
+                                logger.error("Still failed to retrieve week information after reload. Exiting.")
+                                return
                     except Exception as e:
                         logger.error(f"Error extracting current week's timetable data: {e}")
                         return
@@ -378,6 +441,23 @@ async def main():
             start_time = stats.get("start_time", end_time)
             elapsed = end_time - start_time
             logger.info(f"Extraction completed in {elapsed:.2f} seconds")
+
+            # Check and report cookie expiration at the end
+            if args.use_cookies:
+                if hasattr(auth_service, "cookie_data") and auth_service.cookie_data:
+                    end_expiration_msg = estimate_cookie_expiration(auth_service.cookie_data)
+                    logger.info(f"Final cookie status: {end_expiration_msg}")
+                else:
+                    # Try to load cookies from file again
+                    end_cookie_data = load_cookies(args.cookie_path)
+                    if end_cookie_data:
+                        end_expiration_msg = estimate_cookie_expiration(end_cookie_data)
+                        logger.info(f"Final cookie status: {end_expiration_msg}")
+
+    # Execution completed
+    update_stats("end_time", time.time(), increment=False)
+    elapsed_time = stats.get("end_time", 0) - stats.get("start_time", 0)
+    logger.info(f"Execution completed in {elapsed_time:.2f} seconds")
 
 if __name__ == "__main__":
     asyncio.run(main())

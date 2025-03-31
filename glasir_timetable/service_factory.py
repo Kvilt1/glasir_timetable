@@ -15,6 +15,7 @@ from glasir_timetable.services import (
     FormattingService,
     StorageService,
     PlaywrightAuthenticationService,
+    CookieAuthenticationService,
     PlaywrightNavigationService,
     PlaywrightExtractionService,
     DefaultFormattingService,
@@ -24,6 +25,23 @@ from glasir_timetable.services import (
 # Cache for singleton service instances
 _services_cache = {}
 
+# Default configuration options
+_config = {
+    "use_cookie_auth": True,
+    "cookie_path": "cookies.json",
+    "auto_refresh_cookies": True
+}
+
+def set_config(config_dict):
+    """
+    Set configuration options for the service factory.
+    
+    Args:
+        config_dict: Dictionary of configuration options
+    """
+    global _config
+    _config.update(config_dict)
+
 def create_authentication_service() -> AuthenticationService:
     """
     Create and return an authentication service instance.
@@ -32,7 +50,13 @@ def create_authentication_service() -> AuthenticationService:
         AuthenticationService: The authentication service
     """
     if "auth_service" not in _services_cache:
-        _services_cache["auth_service"] = PlaywrightAuthenticationService()
+        if _config.get("use_cookie_auth", True):
+            _services_cache["auth_service"] = CookieAuthenticationService(
+                cookie_path=_config.get("cookie_path", "cookies.json"),
+                auto_refresh=_config.get("auto_refresh_cookies", True)
+            )
+        else:
+            _services_cache["auth_service"] = PlaywrightAuthenticationService()
     return _services_cache["auth_service"]
 
 def create_navigation_service() -> NavigationService:
@@ -79,13 +103,20 @@ def create_storage_service() -> StorageService:
         _services_cache["storage_service"] = FileStorageService()
     return _services_cache["storage_service"]
 
-def create_services() -> Dict[str, Any]:
+def create_services(config=None) -> Dict[str, Any]:
     """
     Create and return all application services.
     
+    Args:
+        config: Optional configuration dictionary
+        
     Returns:
         dict: Dictionary of all service instances
     """
+    # Update config if provided
+    if config:
+        set_config(config)
+    
     return {
         "auth_service": create_authentication_service(),
         "navigation_service": create_navigation_service(),
