@@ -12,6 +12,7 @@ import logging
 import time
 from pathlib import Path
 from datetime import datetime, timedelta
+import getpass
 
 # Add parent directory to path if running as script
 if __name__ == "__main__":
@@ -83,6 +84,36 @@ def is_new_format(timetable_data):
     """
     return isinstance(timetable_data, dict) and timetable_data.get("formatVersion") == 2
 
+def generate_credentials_file(file_path, username, password):
+    """
+    Generate a credentials file with the provided username and password.
+    
+    Args:
+        file_path (str): Path where the file should be created
+        username (str): Username to save
+        password (str): Password to save
+    """
+    credentials = {
+        "username": username,
+        "password": password
+    }
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, 'w') as f:
+        json.dump(credentials, f, indent=4)
+    logger.info(f"Credentials saved to {file_path}")
+
+def prompt_for_credentials():
+    """
+    Prompt the user to enter their username and password interactively.
+    
+    Returns:
+        dict: Dictionary with username and password keys
+    """
+    print("\nNo credentials found. Please enter your Glasir login details:")
+    username = input("Username (without @glasir.fo): ")
+    password = getpass.getpass("Password: ")
+    return {"username": username, "password": password}
+
 async def main():
     """
     Main entry point for the Glasir Timetable application.
@@ -94,9 +125,9 @@ async def main():
     
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Extract timetable data from Glasir')
-    parser.add_argument('--email', type=str, help='Email for login')
+    parser.add_argument('--username', type=str, help='Username for login (without @glasir.fo)')
     parser.add_argument('--password', type=str, help='Password for login')
-    parser.add_argument('--credentials-file', type=str, default='glasir_timetable/credentials.json', help='JSON file with email and password')
+    parser.add_argument('--credentials-file', type=str, default='glasir_timetable/credentials.json', help='JSON file with username and password')
     parser.add_argument('--weekforward', type=int, default=0, help='Number of weeks forward to extract')
     parser.add_argument('--weekbackward', type=int, default=0, help='Number of weeks backward to extract')
     parser.add_argument('--all-weeks', action='store_true', help='Extract all available weeks from all academic years')
@@ -106,6 +137,7 @@ async def main():
     parser.add_argument('--log-level', type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], 
                         default='INFO', help='Set the logging level')
     parser.add_argument('--log-file', type=str, help='Log to a file instead of console')
+    parser.add_argument('--batch-size', type=int, default=3, help='Number of homework items to process in parallel (default: 3)')
     args = parser.parse_args()
     
     # Configure logging based on command-line arguments
@@ -121,25 +153,36 @@ async def main():
     for handler in logger.handlers:
         handler.setLevel(log_level)
     
-    # Load credentials
+    # Load or prompt for credentials
     credentials = {}
-    if os.path.exists(args.credentials_file):
+    
+    # First check command line arguments
+    if args.username and args.password:
+        credentials["username"] = args.username
+        credentials["password"] = args.password
+        logger.info("Using credentials provided via command line arguments")
+        
+        # Save the credentials to file for future use
+        generate_credentials_file(args.credentials_file, args.username, args.password)
+    # Then try to load from credentials file
+    elif os.path.exists(args.credentials_file):
         try:
             with open(args.credentials_file, 'r') as f:
                 credentials = json.load(f)
-        except FileNotFoundError:
-            logger.error(f"{args.credentials_file} not found. Please create a credentials.json file with 'email' and 'password' fields.")
-            return
-    
-    # Command line arguments override credentials file
-    if args.email:
-        credentials["email"] = args.email
-    if args.password:
-        credentials["password"] = args.password
+            logger.info(f"Loaded credentials from {args.credentials_file}")
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.error(f"Error reading {args.credentials_file}: {e}")
+            credentials = prompt_for_credentials()
+            generate_credentials_file(args.credentials_file, credentials["username"], credentials["password"])
+    # If no credentials available, prompt user
+    else:
+        logger.info(f"No credentials file found at {args.credentials_file}")
+        credentials = prompt_for_credentials()
+        generate_credentials_file(args.credentials_file, credentials["username"], credentials["password"])
     
     # Check for required credentials
-    if "email" not in credentials or "password" not in credentials:
-        logger.error("Email and password must be provided either in credentials file or as command line arguments")
+    if "username" not in credentials or "password" not in credentials:
+        logger.error("Username and password must be provided")
         return
     
     # Create output directory if it doesn't exist
@@ -174,7 +217,7 @@ async def main():
             
             async with error_screenshot_context(page, "main", "general_errors"):
                 # Login to Glasir
-                await login_to_glasir(page, credentials["email"], credentials["password"])
+                await login_to_glasir(page, credentials["username"], credentials["password"])
                 
                 # Initialize student_id for JavaScript navigation
                 student_id = None
@@ -205,7 +248,8 @@ async def main():
                         page=page,
                         output_dir=args.output_dir,
                         teacher_map=teacher_map,
-                        student_id=student_id
+                        student_id=student_id,
+                        batch_size=args.batch_size
                     )
                     
                     # Log results
@@ -220,7 +264,7 @@ async def main():
                 logger.info("Processing current week...")
                 
                 # Extract current week data
-                timetable_data, week_info = await extract_timetable_data(page, teacher_map)
+                timetable_data, week_info = await extract_timetable_data(page, teacher_map, batch_size=args.batch_size)
                 
                 # Format filename with standardized format
                 start_date = week_info['start_date']
@@ -256,7 +300,8 @@ async def main():
                         teacher_map=teacher_map,
                         student_id=student_id,
                         output_dir=args.output_dir,
-                        processed_weeks=processed_weeks
+                        processed_weeks=processed_weeks,
+                        batch_size=args.batch_size
                     )
 
             # Print summary of errors

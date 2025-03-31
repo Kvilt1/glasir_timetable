@@ -5,20 +5,23 @@ Authentication module for the Glasir Timetable application.
 import logging
 from glasir_timetable import logger
 
-async def login_to_glasir(page, email, password):
+async def login_to_glasir(page, username, password):
     """
     Log in to tg.glasir.fo using Microsoft authentication.
     
     Args:
         page: The Playwright page object.
-        email: The email address for login.
+        username: The username for login (without @glasir.fo domain).
         password: The password for login.
     """
+    # Append domain to username
+    email = f"{username}@glasir.fo"
+    
     logger.info("Navigating to tg.glasir.fo...")
     await page.goto("https://tg.glasir.fo")
     
     # Enter email
-    logger.info("Entering email...")
+    logger.info("Entering username...")
     await page.fill("#i0116", email)
     await page.click("#idSIButton9")
     

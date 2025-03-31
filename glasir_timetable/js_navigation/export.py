@@ -32,7 +32,8 @@ async def export_all_weeks(
     page, 
     output_dir, 
     teacher_map, 
-    student_id=None
+    student_id=None,
+    batch_size=3
 ):
     """
     Export all available timetable weeks to JSON files using JavaScript-based navigation.
@@ -42,6 +43,7 @@ async def export_all_weeks(
         output_dir: Directory to save output files
         teacher_map: Dictionary mapping teacher initials to full names
         student_id: Student ID for JavaScript navigation (optional)
+        batch_size: Number of homework items to process in parallel (default: 3)
     
     Returns:
         dict: Summary of processing results
@@ -162,7 +164,7 @@ async def export_all_weeks(
                         continue
                     
                     # Extract timetable data
-                    timetable_data, week_details = await extract_timetable_data(page, teacher_map)
+                    timetable_data, week_details = await extract_timetable_data(page, teacher_map, batch_size=batch_size)
                     
                     # Get standardized week information
                     year = week_info.get('year', datetime.now().year)

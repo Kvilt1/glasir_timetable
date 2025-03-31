@@ -5,31 +5,61 @@ This application extracts timetable data from the Glasir website and saves it in
 ## Features
 
 - Extracts class information including subjects, teachers, rooms, times, and homework
+- Parallel homework extraction for improved performance
 - Supports multiple weeks extraction
 - Standardized JSON format compatible with calendar applications
 - Multiple output format options for better integration
+- Interactive credential prompting when no saved credentials are found
+- Automatic domain handling for Glasir usernames
 
 ## Installation
+
+### Quick Start
 
 ```bash
 git clone https://github.com/yourusername/glasir_timetable.git
 cd glasir_timetable
 pip3 install -r requirements.txt
+python3 -m playwright install
 ```
+
+### Advanced Installation Options
+
+This project supports multiple dependency management options:
+
+1. **Traditional Method (pip)**: Uses `requirements.txt`
+2. **Poetry (Recommended)**: Better dependency resolution via `pyproject.toml`
+3. **PDM**: Modern Python package manager via `pdm.toml`
+
+For detailed installation instructions, troubleshooting guide, and advanced options, see [INSTALLATION.md](INSTALLATION.md).
+
+### Dependencies
+
+- **Required**: playwright, beautifulsoup4, tqdm, requests
+- **Optional**: python-dotenv, pydantic
+- **Development**: pytest, pytest-asyncio, black, isort, mypy (Poetry/PDM only)
 
 ## Usage
 
 ### Basic Usage
 
 ```bash
-python3 glasir_timetable/main.py --email your_email@example.com --password your_password
+python3 glasir_timetable/main.py
+```
+
+On first run, you'll be prompted to enter your Glasir username and password. These credentials will be saved for future use.
+
+### Command-line Arguments
+
+```bash
+python3 glasir_timetable/main.py --username your_username --password your_password
 ```
 
 ### Options
 
-- `--email`: Your login email
+- `--username`: Your login username (without @glasir.fo)
 - `--password`: Your login password
-- `--credentials-file`: Path to JSON file with email and password (default: glasir_timetable/credentials.json)
+- `--credentials-file`: Path to JSON file with username and password (default: glasir_timetable/credentials.json)
 - `--weekforward`: Number of weeks forward to extract (default: 0)
 - `--weekbackward`: Number of weeks backward to extract (default: 0)
 - `--all-weeks`: Extract all available weeks from all academic years
@@ -41,6 +71,28 @@ python3 glasir_timetable/main.py --email your_email@example.com --password your_
 - `--use-new-format`: Save data in the new event-centric format (default)
 - `--use-old-format`: Save data in the old traditional format
 - `--save-dual-format`: Save data in both formats
+- `--batch-size`: Number of homework items to process in parallel (default: 3)
+
+## Authentication
+
+The application supports three methods of authentication:
+
+1. **Interactive Prompt**: If no credentials are found, you'll be prompted to enter your username and password.
+2. **Command-line Arguments**: Provide credentials via `--username` and `--password` flags.
+3. **Credentials File**: A JSON file containing your username and password.
+
+Your username is automatically appended with "@glasir.fo" domain during login. You only need to provide the username portion.
+
+## Advanced Features
+
+### Parallel Homework Extraction
+
+The application uses an optimized parallel approach to extract homework data:
+
+- Processes multiple homework items simultaneously for faster extraction
+- Configurable batch size (via `--batch-size` parameter) to balance performance and server load
+- Automatic fallback to sequential processing if parallel extraction fails
+- Comprehensive error handling and reporting
 
 ## Output Formats
 

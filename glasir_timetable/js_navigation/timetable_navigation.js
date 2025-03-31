@@ -641,6 +641,85 @@ window.glasirTimetable = window.glasirTimetable || {
     },
     
     /**
+     * Extract homework content for multiple lessons in parallel with batching
+     * 
+     * @param {Array<string>} lessonIds - Array of lesson IDs to extract homework for
+     * @param {number} batchSize - Size of each batch for parallel processing (default: 3)
+     * @returns {Promise<Object>} - Promise resolving to a mapping of lesson IDs to their homework content
+     */
+    allHomeworkContentParallel: async function(lessonIds, batchSize = 3) {
+      if (!Array.isArray(lessonIds) || lessonIds.length === 0) {
+        return {};
+      }
+      
+      const homeworkMap = {};
+      
+      try {
+        console.log(`Processing ${lessonIds.length} homework notes via JavaScript IN PARALLEL with batch size ${batchSize}`);
+        
+        // Create a modified version of homeworkContent that returns promises
+        const getHomeworkPromise = (lessonId) => {
+          return new Promise((resolve) => {
+            try {
+              // Use the existing homeworkContent function
+              const content = this.homeworkContent(lessonId);
+              resolve({ lessonId, content, success: true });
+            } catch (error) {
+              console.error(`Error processing lesson ${lessonId}: ${error.message}`);
+              resolve({ lessonId, content: `Error: ${error.message}`, success: false });
+            }
+          });
+        };
+        
+        // Split lesson IDs into batches
+        const batches = [];
+        for (let i = 0; i < lessonIds.length; i += batchSize) {
+          batches.push(lessonIds.slice(i, i + batchSize));
+        }
+        
+        console.log(`Split into ${batches.length} batches of up to ${batchSize} lessons each`);
+        
+        // Process each batch in sequence, but process lessons within each batch in parallel
+        for (let i = 0; i < batches.length; i++) {
+          const batch = batches[i];
+          console.log(`Processing batch ${i+1}/${batches.length} with ${batch.length} lessons in parallel`);
+          
+          // Create promises for all lessons in this batch
+          const batchPromises = batch.map(lessonId => getHomeworkPromise(lessonId));
+          
+          // Wait for all promises in this batch to resolve
+          const batchResults = await Promise.all(batchPromises);
+          
+          // Process results
+          batchResults.forEach(result => {
+            homeworkMap[result.lessonId] = result.content;
+            
+            // Debug output
+            if (result.success) {
+              console.log(`Found homework for ${result.lessonId}: ${result.content.substring(0, 30)}...`);
+            } else {
+              console.log(`Error or no content for ${result.lessonId}`);
+            }
+          });
+          
+          console.log(`Completed batch ${i+1}/${batches.length}`);
+          
+          // Add a short delay between batches to avoid overwhelming the server
+          if (i < batches.length - 1) {
+            console.log('Waiting before processing next batch...');
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        }
+        
+        console.log(`Completed parallel processing of ${Object.keys(homeworkMap).length} homework notes`);
+      } catch (error) {
+        console.error(`Error in parallel homework processing: ${error.message}`);
+      }
+      
+      return homeworkMap;
+    },
+    
+    /**
      * Get all available weeks from the timetable navigation.
      * @returns {Array} Array of week objects with properties: weekNum, v, weekText, isCurrentWeek
      */
@@ -853,6 +932,17 @@ window.glasirTimetable = window.glasirTimetable || {
   },
   
   /**
+   * Extract homework content for multiple lessons in parallel with batching
+   * 
+   * @param {Array<string>} lessonIds - Array of lesson IDs to extract homework for
+   * @param {number} batchSize - Size of each batch for parallel processing (default: 3)
+   * @returns {Promise<Object>} - Promise resolving to a mapping of lesson IDs to their homework content
+   */
+  extractAllHomeworkContentParallel: function(lessonIds, batchSize = 3) {
+    return this.extractors.allHomeworkContentParallel(lessonIds, batchSize);
+  },
+  
+  /**
    * Get all available weeks from the timetable navigation.
    * @returns {Array} Array of week objects
    */
@@ -889,6 +979,10 @@ function extractHomeworkContent(lessonId) {
 
 function extractAllHomeworkContent(lessonIds) {
   return glasirTimetable.extractAllHomeworkContent(lessonIds);
+}
+
+function extractAllHomeworkContentParallel(lessonIds, batchSize = 3) {
+  return glasirTimetable.extractAllHomeworkContentParallel(lessonIds, batchSize);
 }
 
 function getAllWeeks() {

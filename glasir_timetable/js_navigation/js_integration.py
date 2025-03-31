@@ -308,13 +308,14 @@ async def extract_homework_content_js(page, lesson_id):
             
         return homework
 
-async def extract_all_homework_content_js(page, lesson_ids):
+async def extract_all_homework_content_js(page, lesson_ids, batch_size=3):
     """
     Extract homework content for multiple lessons using JavaScript.
     
     Args:
         page: The Playwright page object
         lesson_ids: List of lesson IDs to extract homework for
+        batch_size: Number of homework items to process in parallel (default: 3)
         
     Returns:
         dict: Dictionary mapping lesson IDs to homework content
@@ -326,35 +327,63 @@ async def extract_all_homework_content_js(page, lesson_ids):
         logger.warning("No lesson IDs provided for homework extraction")
         return {}
     
-    homework_data = {}
-    
     # Ensure console listener is attached
     register_console_listener(page)
     
-    # Track extraction progress
-    from tqdm import tqdm
-    logger.info(f"Extracting homework for {len(lesson_ids)} lessons...")
+    # Log the start of extraction
+    logger.info(f"Extracting homework for {len(lesson_ids)} lessons in parallel (batch size: {batch_size})...")
     
-    for lesson_id in tqdm(lesson_ids, desc="Extracting homework"):
-        try:
-            # Extract homework for this lesson
-            homework = await extract_homework_content_js(page, lesson_id)
+    try:
+        # Use the parallel JavaScript function with the specified batch size
+        homework_data = await evaluate_js_safely(
+            page,
+            f"glasirTimetable.extractAllHomeworkContentParallel({json.dumps(lesson_ids)}, {batch_size})",
+            error_message=f"Failed to extract homework in parallel for {len(lesson_ids)} lessons"
+        )
+        
+        if homework_data:
+            # Count successes (non-null, non-error values)
+            success_count = sum(1 for content in homework_data.values() 
+                               if content and not (isinstance(content, str) and content.startswith("Error:")))
             
-            # Store result (even if empty)
-            homework_data[lesson_id] = homework
+            logger.info(f"Successfully extracted {success_count} of {len(lesson_ids)} homework items in parallel")
+        else:
+            logger.warning("No homework data returned from parallel extraction")
+            homework_data = {}
             
-            # Small delay to avoid overloading the server
-            await asyncio.sleep(0.2)
-            
-        except Exception as e:
-            logger.error(f"Error extracting homework for lesson {lesson_id}: {e}")
-            add_error("homework_errors", f"Failed to extract homework for lesson {lesson_id}", str(e))
-            
-            # Store null for this lesson
-            homework_data[lesson_id] = None
-    
-    logger.info(f"Extracted homework data for {len(homework_data)} lessons")
-    return homework_data
+        return homework_data
+        
+    except Exception as e:
+        logger.error(f"Error during parallel homework extraction: {e}")
+        add_error("homework_errors", f"Failed to extract homework in parallel", str(e))
+        
+        # Fall back to sequential extraction if parallel fails
+        logger.info("Falling back to sequential extraction method...")
+        
+        homework_data = {}
+        # Track extraction progress
+        from tqdm import tqdm
+        
+        for lesson_id in tqdm(lesson_ids, desc="Extracting homework (fallback)"):
+            try:
+                # Extract homework for this lesson
+                homework = await extract_homework_content_js(page, lesson_id)
+                
+                # Store result (even if empty)
+                homework_data[lesson_id] = homework
+                
+                # Small delay to avoid overloading the server
+                await asyncio.sleep(0.2)
+                
+            except Exception as inner_e:
+                logger.error(f"Error extracting homework for lesson {lesson_id}: {inner_e}")
+                add_error("homework_errors", f"Failed to extract homework for lesson {lesson_id}", str(inner_e))
+                
+                # Store null for this lesson
+                homework_data[lesson_id] = None
+        
+        logger.info(f"Extracted homework data for {len(homework_data)} lessons using fallback method")
+        return homework_data
 
 async def test_javascript_integration(page):
     """

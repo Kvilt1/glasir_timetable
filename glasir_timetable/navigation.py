@@ -52,7 +52,7 @@ async def with_week_navigation(page, week_offset, student_id):
             logger.error(f"Error returning to baseline: {e}")
 
 
-async def navigate_and_extract(page, week_offset, teacher_map, student_id):
+async def navigate_and_extract(page, week_offset, teacher_map, student_id, batch_size=3):
     """
     Navigate to a specific week and extract its timetable data.
     
@@ -61,6 +61,7 @@ async def navigate_and_extract(page, week_offset, teacher_map, student_id):
         week_offset: The offset from current week (0=current, 1=next, -1=previous)
         teacher_map: Dictionary mapping teacher initials to full names
         student_id: The student ID GUID
+        batch_size: Number of homework items to process in parallel (default: 3)
         
     Returns:
         tuple: (timetable_data, week_info) if successful, (None, None) if navigation failed
@@ -70,11 +71,11 @@ async def navigate_and_extract(page, week_offset, teacher_map, student_id):
             return None, None
             
         # Extract timetable data
-        timetable_data, week_details = await extract_timetable_data(page, teacher_map)
+        timetable_data, week_details = await extract_timetable_data(page, teacher_map, batch_size=batch_size)
         return timetable_data, week_info
 
 
-async def process_single_week(page, week_offset, teacher_map, student_id, output_dir, processed_weeks=None):
+async def process_single_week(page, week_offset, teacher_map, student_id, output_dir, processed_weeks=None, batch_size=3):
     """
     Process a single week - navigate, extract, and save data.
     
@@ -85,6 +86,7 @@ async def process_single_week(page, week_offset, teacher_map, student_id, output
         student_id: The student ID GUID
         output_dir: Directory to save output files
         processed_weeks: Optional set of already processed week numbers to avoid duplicates
+        batch_size: Number of homework items to process in parallel (default: 3)
         
     Returns:
         dict: Week information if successful, None if failed or already processed
@@ -97,7 +99,7 @@ async def process_single_week(page, week_offset, teacher_map, student_id, output
     async with error_screenshot_context(page, f"{context_name}_{abs(week_offset)}", "navigation_errors"):
         try:
             # Navigate and extract data
-            timetable_data, week_info = await navigate_and_extract(page, week_offset, teacher_map, student_id)
+            timetable_data, week_info = await navigate_and_extract(page, week_offset, teacher_map, student_id, batch_size=batch_size)
             
             # Skip if navigation failed or already processed
             if not week_info or week_info.get('weekNumber') in processed_weeks:
@@ -132,7 +134,7 @@ async def process_single_week(page, week_offset, teacher_map, student_id, output
             return None
 
 
-async def process_weeks(page, directions, teacher_map, student_id, output_dir, processed_weeks=None):
+async def process_weeks(page, directions, teacher_map, student_id, output_dir, processed_weeks=None, batch_size=3):
     """
     Process multiple weeks in the specified directions.
     
@@ -143,6 +145,7 @@ async def process_weeks(page, directions, teacher_map, student_id, output_dir, p
         student_id: The student ID GUID
         output_dir: Directory to save output files
         processed_weeks: Optional set of already processed week numbers
+        batch_size: Number of homework items to process in parallel (default: 3)
         
     Returns:
         list: Successfully processed week information
@@ -158,7 +161,8 @@ async def process_weeks(page, directions, teacher_map, student_id, output_dir, p
             teacher_map=teacher_map,
             student_id=student_id,
             output_dir=output_dir,
-            processed_weeks=processed_weeks
+            processed_weeks=processed_weeks,
+            batch_size=batch_size
         )
         if result:
             results.append(result)

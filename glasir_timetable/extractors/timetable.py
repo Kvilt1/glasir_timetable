@@ -88,7 +88,6 @@ async def extract_homework_content(page, lesson_id, subject_code="Unknown"):
                         "method": "javascript"
                     }
                 
-                # If JS method returned null, only fall back to UI method if explicitly instructed
                 # Check if we should use UI fallback (only if JavaScript is not enforced)
                 use_ui_fallback = await page.evaluate("window.glasirTimetable.useUIFallback !== false")
                 if not use_ui_fallback:
@@ -127,17 +126,31 @@ async def extract_homework_content(page, lesson_id, subject_code="Unknown"):
         selector = f'input[type="image"][src*="note.gif"][onclick*="{lesson_id}"]'
         
         # Check if the speech bubble exists
-        if await page.query_selector(selector):
-            # First, clear any previous homework popup by clicking elsewhere 
-            await page.click('body', position={"x": 1, "y": 1})
-            await page.wait_for_timeout(300)
+        bubble_element = await page.query_selector(selector)
+        if not bubble_element:
+            from glasir_timetable import add_error, update_stats
+            add_error("homework_errors", f"No speech bubble found for {subject_code}", {
+                "lesson_id": lesson_id
+            })
+            update_stats("homework_failed")
+            return {
+                "success": False,
+                "error": "Speech bubble not found",
+                "method": "ui"
+            }
             
-            # Now click the speech bubble for this specific class
-            await page.click(selector)
+        # First, clear any previous homework popup by clicking elsewhere 
+        await page.click('body', position={"x": 1, "y": 1})
+        
+        # Now click the speech bubble for this specific class
+        await bubble_element.click()
+        
+        # Wait for the popup window to appear using explicit selector with timeout
+        popup_selector = f'#MyWindow{lesson_id}Main'
+        try:
+            # Wait for the popup with a reasonable timeout
+            await page.wait_for_selector(popup_selector, timeout=3000)
             
-            # Wait for the content to load - increased timeout
-            await page.wait_for_timeout(1000)
-
             # Use the window ID to specifically target this popup's content
             homework_content = await page.evaluate(f'''(lessonId) => {{
                 // Look for the specific window containing this lesson's homework
@@ -237,15 +250,17 @@ async def extract_homework_content(page, lesson_id, subject_code="Unknown"):
                     "error": "Empty content from UI method",
                     "method": "ui"
                 }
-        else:
+        except Exception as timeout_error:
+            # Handle timeout or other errors during popup waiting
             from glasir_timetable import add_error, update_stats
-            add_error("homework_errors", f"No speech bubble found for {subject_code}", {
-                "lesson_id": lesson_id
+            add_error("homework_errors", f"Error waiting for popup for {subject_code}: {timeout_error}", {
+                "lesson_id": lesson_id,
+                "error": str(timeout_error)
             })
             update_stats("homework_failed")
             return {
                 "success": False,
-                "error": "Speech bubble not found",
+                "error": f"Popup timeout: {timeout_error}",
                 "method": "ui"
             }
             
@@ -326,13 +341,14 @@ async def extract_student_info(page):
         "class": "22y"
     }
 
-async def extract_timetable_data(page, teacher_map):
+async def extract_timetable_data(page, teacher_map, batch_size=3):
     """
     Extract timetable data from the page using BeautifulSoup parsing.
     
     Args:
         page: The Playwright page object.
         teacher_map: A dictionary mapping teacher initials to full names.
+        batch_size: Number of homework items to process in parallel (default: 3)
         
     Returns:
         tuple: A tuple containing timetable data and week information.
@@ -622,38 +638,93 @@ async def extract_timetable_data(page, teacher_map):
 
         logger.info(f"Processing {len(all_note_lessons)} homework assignments")
         
-        # MODIFIED: Skip the JavaScript-based extraction and go straight to sequential
-        logger.info("Using sequential homework extraction")
-        homework_count = 0
-        
-        # Create a progress bar for homework extraction
-        with tqdm(total=len(all_note_lessons), desc="Extracting homework", unit="notes",
-                 bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
-                 dynamic_ncols=True, position=1, leave=False) as pbar:
-            start_time = time.time()
+        # Check if JavaScript method is available
+        js_available = False
+        skip_sequential_extraction = False  # Initialize the flag
+        try:
+            js_available = await page.evaluate("typeof window.glasirTimetable === 'object' && typeof window.glasirTimetable.extractHomeworkContent === 'function'")
+            parallel_available = await page.evaluate("typeof window.glasirTimetable === 'object' && typeof window.glasirTimetable.extractAllHomeworkContentParallel === 'function'")
             
-            for lesson_id, subject_code in all_note_lessons:
-                lesson_details = lesson_id_to_details.get(lesson_id)
-                if lesson_details:
-                    # Extract homework content by clicking the speech bubble
-                    result = await extract_homework_content(page, lesson_id, subject_code)
+            if parallel_available:
+                logger.info("Parallel JavaScript homework extraction available - using batch processing")
+                
+                # Extract just the lesson IDs for parallel processing
+                lesson_ids = [lesson_id for lesson_id, _ in all_note_lessons]
+                
+                try:
+                    # Import the JavaScript integration function
+                    from glasir_timetable.js_navigation.js_integration import extract_all_homework_content_js
                     
-                    if result["success"]:
-                        lesson_details["description"] = result["content"]  # Use description instead of Homework
-                        homework_count += 1
-                        pbar.set_description(f"Homework: {subject_code} (success)")
-                    else:
-                        pbar.set_description(f"Homework: {subject_code} (failed)")
+                    # Use the parallel extraction function
+                    homework_data = await extract_all_homework_content_js(page, lesson_ids, batch_size)
                     
-                    # Update progress
-                    pbar.update(1)
+                    # Assign the homework content to the corresponding lesson details
+                    homework_count = 0
+                    for lesson_id, content in homework_data.items():
+                        if content and lesson_id in lesson_id_to_details:
+                            lesson_details = lesson_id_to_details[lesson_id]
+                            lesson_details["description"] = content
+                            homework_count += 1
+                            update_stats("homework_success")
                     
-                    # Calculate and display statistics
-                    elapsed = time.time() - start_time
-                    items_per_min = 60 * pbar.n / elapsed if elapsed > 0 else 0
-                    pbar.set_postfix({"success": homework_count, "rate": f"{items_per_min:.1f}/min"})
+                    logger.info(f"Successfully assigned {homework_count} homework entries from parallel extraction")
+                    
+                    # Set a flag to skip the sequential processing rather than returning early
+                    # This ensures all other processing steps will still be executed
+                    skip_sequential_extraction = True
+                    
+                except Exception as e:
+                    logger.error(f"Error in parallel homework extraction: {e}")
+                    # Fall through to traditional extraction
+                    logger.info("Falling back to sequential homework extraction")
+                    skip_sequential_extraction = False
+            else:
+                logger.info(f"JavaScript homework extraction {'available' if js_available else 'not available'} (parallel API not found)")
+                skip_sequential_extraction = False
+        except Exception as e:
+            logger.warning(f"Error checking JavaScript availability: {e}")
+            skip_sequential_extraction = False
         
-        logger.info(f"Successfully assigned {homework_count} homework entries using sequential extraction")
+        # If we get here, either parallel extraction wasn't available or it failed
+        # Only do sequential extraction if parallel extraction didn't succeed
+        if not skip_sequential_extraction:
+            # Track extraction results
+            homework_count = 0
+            failures = 0
+            
+            # Create a progress bar for homework extraction
+            with tqdm(total=len(all_note_lessons), desc="Extracting homework", unit="notes",
+                     bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+                     dynamic_ncols=True, position=1, leave=False) as pbar:
+                start_time = time.time()
+                
+                for lesson_id, subject_code in all_note_lessons:
+                    lesson_details = lesson_id_to_details.get(lesson_id)
+                    if lesson_details:
+                        # Extract homework content using our improved function (JS first with better UI fallback)
+                        result = await extract_homework_content(page, lesson_id, subject_code)
+                        
+                        if result["success"]:
+                            lesson_details["description"] = result["content"]  # Use description instead of Homework
+                            homework_count += 1
+                            pbar.set_description(f"Homework: {subject_code} ({result['method']} success)")
+                        else:
+                            failures += 1
+                            pbar.set_description(f"Homework: {subject_code} ({result['method']} failed)")
+                        
+                        # Update progress
+                        pbar.update(1)
+                        
+                        # Calculate and display statistics
+                        elapsed = time.time() - start_time
+                        items_per_min = 60 * pbar.n / elapsed if elapsed > 0 else 0
+                        pbar.set_postfix({
+                            "success": homework_count, 
+                            "failed": failures,
+                            "rate": f"{items_per_min:.1f}/min"
+                        })
+            
+            logger.info(f"Successfully assigned {homework_count} homework entries ({failures} failures)")
 
     # Sort classes for each day by time slot and prioritize uncancelled classes
     for day, classes in day_classes.items():
