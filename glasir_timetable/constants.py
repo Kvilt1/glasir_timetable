@@ -38,4 +38,52 @@ CANCELLED_CLASS_INDICATORS = [
     'lektionslinje_lesson7',
     'lektionslinje_lesson10',
     'lektionslinje_lessoncancelled'
-] 
+]
+
+# For backwards compatibility - kept for translations in extractors
+DAY_MAP_DA_TO_EN = DAY_NAME_MAPPING
+
+# Actual time slots used in the timetable (format: start_time, end_time)
+TIME_SLOTS_REAL = [
+    ("08:10", "09:40"),  # Block 1
+    ("10:05", "11:35"),  # Block 2
+    ("12:10", "13:40"),  # Block 3
+    ("13:55", "15:25"),  # Block 4
+    ("15:30", "17:00"),  # Block 5
+    ("17:15", "18:45"),  # Block 6
+]
+
+# Mapping of level codes to descriptive names
+LEVEL_MAP = {
+    "A": "A-level",
+    "B": "B-level", 
+    "C": "C-level",
+    # Add more level mappings as needed
+}
+
+# URLs
+GLASIR_BASE_URL = "https://tg.glasir.fo"
+GLASIR_TIMETABLE_URL = f"{GLASIR_BASE_URL}/timetable/main.asp"
+NOTE_ASP_URL = f"{GLASIR_BASE_URL}/timetable/note.asp"
+TEACHER_MAP_URL = f"{GLASIR_BASE_URL}/timetable/laerer.asp"
+TIMETABLE_INFO_URL = f"{GLASIR_BASE_URL}/timetable/skema_data.asp"
+
+# Default headers for API requests
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+}
+
+# Default fallback values
+DEFAULT_LNAME_FALLBACK = "29"  # Fallback for lname if extraction fails
+DEFAULT_TIMER_FALLBACK = "0"   # Fallback for timer if extraction fails
+
+# File paths
+TEACHER_CACHE_FILE = "glasir_timetable/teacher_cache.json"
+
+# Auth cookie file path
+AUTH_COOKIES_FILE = "cookies.json"
+
+# Data directory for storing timetable data
+DATA_DIR = "glasir_timetable/weeks" 

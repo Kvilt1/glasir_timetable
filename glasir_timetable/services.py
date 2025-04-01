@@ -153,16 +153,21 @@ class ExtractionService(abc.ABC):
         pass
     
     @abc.abstractmethod
-    async def extract_teacher_map(self, page: Page, force_update: bool = False) -> Dict[str, str]:
+    async def extract_teacher_map(self, page: Page, force_update: bool = False, use_api: bool = False, 
+                             cookies: Dict[str, str] = None, lname_value: str = None, timer_value: int = None) -> Dict[str, str]:
         """
-        Extract the teacher mapping (initials to full names) from the page.
+        Extract the teacher mapping using the extractors module.
         
         Args:
-            page: The Playwright page object
-            force_update: Whether to force an update of the teacher mapping cache
+            page: The Playwright page object.
+            force_update: Whether to force an update of the teacher mapping cache.
+            use_api: Whether to use the API approach instead of page navigation.
+            cookies: Cookies dictionary to use with the API approach.
+            lname_value: The lname value for API requests.
+            timer_value: The timer value for API requests.
             
         Returns:
-            dict: Mapping of teacher initials to full names
+            dict: Mapping of teacher initials to full names.
         """
         pass
     
@@ -668,24 +673,46 @@ class PlaywrightExtractionService(ExtractionService):
             add_error("timetable_extraction", f"Failed to extract timetable: {e}")
             return {}
     
-    async def extract_teacher_map(self, page: Page, force_update: bool = False) -> Dict[str, str]:
+    async def extract_teacher_map(self, page: Page, force_update: bool = False, use_api: bool = False, 
+                             cookies: Dict[str, str] = None, lname_value: str = None, timer_value: int = None) -> Dict[str, str]:
         """
-        Extract the teacher mapping (initials to full names) from the page.
+        Extract the teacher mapping using the extractors module.
         
         Args:
-            page: The Playwright page object
-            force_update: Whether to force an update of the teacher mapping cache
+            page: The Playwright page object.
+            force_update: Whether to force an update of the teacher mapping cache.
+            use_api: Whether to use the API approach instead of page navigation.
+            cookies: Cookies dictionary to use with the API approach.
+            lname_value: The lname value for API requests.
+            timer_value: The timer value for API requests.
             
         Returns:
-            dict: Mapping of teacher initials to full names
+            dict: Mapping of teacher initials to full names.
         """
-        from glasir_timetable.extractors.teacher_map import extract_teacher_map
-        
         try:
-            teacher_map = await extract_teacher_map(page, force_update=force_update)
+            from glasir_timetable.extractors.teacher_map import extract_teacher_map as extract_map_func
+            
+            # Pass use_cache based on whether force_update is true or not
+            # Also pass API-related parameters
+            teacher_map = await extract_map_func(
+                page, 
+                use_cache=not force_update,
+                use_api=use_api,
+                cookies=cookies,
+                lname_value=lname_value,
+                timer_value=timer_value
+            )
+            
+            if not teacher_map:
+                add_error("teacher_map_extraction", "Failed to extract teacher map, returned empty map")
+                logger.error("Extraction of teacher map returned an empty map.")
+                return {}
+                
             return teacher_map
+            
         except Exception as e:
-            add_error("teacher_map_extraction", f"Failed to extract teacher map: {e}")
+            add_error("teacher_map_extraction", f"Error during teacher map extraction: {e}", details=str(e))
+            logger.error(f"Error extracting teacher map: {e}")
             return {}
     
     async def extract_homework(self, page: Page, lesson_id: str, subject_code: str = "Unknown") -> Optional[Homework]:
@@ -993,6 +1020,17 @@ class FileStorageService(StorageService):
     File-based implementation of the StorageService interface.
     """
     
+    def __init__(self, storage_dir: str = "glasir_timetable/weeks"):
+        """
+        Initialize with a storage directory.
+        
+        Args:
+            storage_dir: Directory to store timetable files (default: "glasir_timetable/weeks")
+        """
+        self.storage_dir = storage_dir
+        # Create the storage directory if it doesn't exist
+        os.makedirs(storage_dir, exist_ok=True)
+    
     def save_timetable(self, data: Union[TimetableData, Dict[str, Any]], output_path: str) -> bool:
         """
         Save timetable data to a JSON file.
@@ -1137,4 +1175,309 @@ class FileStorageService(StorageService):
             return username, password
         except Exception as e:
             logger.error(f"Error loading credentials: {e}")
-            return None, None 
+            return None, None
+
+class ApiExtractionService(ExtractionService):
+    """
+    Service that extracts data using the ApiClient rather than Playwright.
+    This offers better performance by directly accessing the Glasir API endpoints.
+    """
+    
+    def __init__(self, api_client):
+        """
+        Initialize with an ApiClient.
+        
+        Args:
+            api_client: The ApiClient instance for accessing Glasir's API
+        """
+        self._api_client = api_client
+        self._teacher_cache = {}  # Local cache for teacher mapping
+
+    async def extract_timetable(self, page: Page, teacher_map: Dict[str, str] = None) -> Union[TimetableData, Dict[str, Any]]:
+        """
+        Extract timetable data from the current page.
+        Note: This still requires a page because some timetable data is not yet extracted via API.
+        
+        Args:
+            page: The Playwright page object
+            teacher_map: Optional dictionary mapping teacher initials to full names
+            
+        Returns:
+            Union[TimetableData, dict]: Extracted timetable data as model or dictionary
+        """
+        # For now, delegate to the Playwright-based implementation
+        # We'll incrementally replace this with API-based implementations
+        playwright_extractor = PlaywrightExtractionService()
+        return await playwright_extractor.extract_timetable(page, teacher_map)
+
+    async def extract_teacher_map(self, page: Page, force_update: bool = False, use_api: bool = True,
+                             cookies: Dict[str, str] = None, lname_value: str = None, timer_value: int = None) -> Dict[str, str]:
+        """
+        Extract the teacher mapping using the API client.
+        
+        Args:
+            page: The Playwright page object (needed for fallback extraction)
+            force_update: Whether to force an update of the teacher mapping cache
+            use_api: Whether to use the API approach (True by default)
+            cookies: Cookies dictionary to use with the API approach (unused with ApiClient)
+            lname_value: The lname value for API requests (unused with ApiClient)
+            timer_value: The timer value for API requests (unused with ApiClient)
+            
+        Returns:
+            dict: Mapping of teacher initials to full names
+        """
+        # If we have a cached result and aren't forcing an update, return it
+        if self._teacher_cache and not force_update:
+            return self._teacher_cache
+        
+        # Try to use the API client for extraction
+        try:
+            # Get student ID from page
+            student_id = await self.get_student_id(page)
+            if not student_id:
+                logger.warning("Could not extract student ID, using fallback method")
+                # Fall back to Playwright extraction if we can't get student ID
+                return await self._fallback_extract_teacher_map(page, force_update)
+            
+            # Use the API client to fetch teacher map
+            teacher_map = await self._api_client.fetch_teacher_map(student_id)
+            
+            if teacher_map:
+                # Cache the result
+                self._teacher_cache = teacher_map
+                return teacher_map
+            else:
+                # Fall back to Playwright extraction if API returns empty
+                logger.warning("API extraction returned empty teacher map, using fallback method")
+                return await self._fallback_extract_teacher_map(page, force_update)
+                
+        except Exception as e:
+            logger.error(f"Error using API client for teacher map extraction: {e}")
+            logger.info("Falling back to Playwright extraction")
+            return await self._fallback_extract_teacher_map(page, force_update)
+
+    async def _fallback_extract_teacher_map(self, page: Page, force_update: bool = False) -> Dict[str, str]:
+        """
+        Fallback method using Playwright for teacher map extraction.
+        
+        Args:
+            page: The Playwright page object
+            force_update: Whether to force an update of the teacher mapping cache
+            
+        Returns:
+            dict: Mapping of teacher initials to full names
+        """
+        # Use the teacher_map extractor directly
+        from glasir_timetable.extractors.teacher_map import extract_teacher_map
+        
+        # Use appropriate cache file path
+        from glasir_timetable.constants import TEACHER_CACHE_FILE
+        
+        teacher_map = await extract_teacher_map(
+            page, 
+            use_cache=not force_update,
+            cache_path=TEACHER_CACHE_FILE,
+            use_api=False  # Don't use API here, as we're already falling back from API
+        )
+        
+        # Cache the result
+        if teacher_map:
+            self._teacher_cache = teacher_map
+        
+        return teacher_map
+
+    async def extract_homework(self, page: Page, lesson_id: str, subject_code: str = "Unknown") -> Optional[Homework]:
+        """
+        Extract homework content for a specific lesson using the API client.
+        
+        Args:
+            page: The Playwright page object (needed for student ID extraction)
+            lesson_id: The ID of the lesson
+            subject_code: The subject code for better error reporting
+            
+        Returns:
+            Optional[Homework]: Homework data if successful, None otherwise
+        """
+        try:
+            # Get student ID
+            student_id = await self.get_student_id(page)
+            if not student_id:
+                logger.warning(f"Could not extract student ID for homework extraction, lesson {lesson_id}")
+                # Fall back to Playwright extraction
+                return await self._fallback_extract_homework(page, lesson_id, subject_code)
+            
+            # Use the API client to fetch homework data
+            homework_data = await self._api_client.fetch_homework_details(lesson_id, student_id)
+            
+            if homework_data is None:
+                logger.warning(f"No homework data found for lesson {lesson_id}")
+                return None
+                
+            if not homework_data:  # Empty dict - means homework exists but is empty
+                return Homework(
+                    lesson_id=lesson_id,
+                    subject_code=subject_code,
+                    content="",
+                    is_empty=True
+                )
+                
+            # Create Homework object
+            return Homework(
+                lesson_id=lesson_id,
+                subject_code=subject_code,
+                content=homework_data.get("description", ""),
+                is_empty=not homework_data.get("description", "")
+            )
+                
+        except Exception as e:
+            logger.error(f"Error using API client for homework extraction (lesson {lesson_id}): {e}")
+            logger.info("Falling back to Playwright extraction")
+            return await self._fallback_extract_homework(page, lesson_id, subject_code)
+
+    async def _fallback_extract_homework(self, page: Page, lesson_id: str, subject_code: str = "Unknown") -> Optional[Homework]:
+        """
+        Fallback method using Playwright for homework extraction.
+        
+        Args:
+            page: The Playwright page object
+            lesson_id: The ID of the lesson
+            subject_code: The subject code for better error reporting
+            
+        Returns:
+            Optional[Homework]: Homework data if successful, None otherwise
+        """
+        # We'll reuse the PlaywrightExtractionService implementation
+        playwright_extractor = PlaywrightExtractionService()
+        return await playwright_extractor.extract_homework(page, lesson_id, subject_code)
+
+    async def extract_multiple_homework(self, 
+                                      page: Page, 
+                                      lesson_ids: List[str], 
+                                      batch_size: int = 10) -> Dict[str, Optional[Homework]]:
+        """
+        Extract homework content for multiple lessons in parallel using the API client.
+        This is much more efficient than the Playwright approach.
+        
+        Args:
+            page: The Playwright page object (needed for student ID extraction)
+            lesson_ids: List of lesson IDs
+            batch_size: Number of homework items to process in parallel
+            
+        Returns:
+            Dict[str, Optional[Homework]]: Dictionary mapping lesson IDs to homework data
+        """
+        if not lesson_ids:
+            return {}
+            
+        result = {}
+        
+        try:
+            # Get student ID
+            student_id = await self.get_student_id(page)
+            if not student_id:
+                logger.warning("Could not extract student ID for batch homework extraction")
+                # Fall back to Playwright extraction
+                return await self._fallback_extract_multiple_homework(page, lesson_ids, batch_size)
+            
+            # Process in batches to avoid overwhelming the server
+            total_lessons = len(lesson_ids)
+            processed = 0
+            failed = 0
+            
+            # Create batches
+            batches = [lesson_ids[i:i + batch_size] for i in range(0, len(lesson_ids), batch_size)]
+            
+            for batch in batches:
+                # Process each batch in parallel using tasks
+                tasks = [self._api_client.fetch_homework_details(lesson_id, student_id) for lesson_id in batch]
+                homework_data_list = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Process results
+                for lesson_id, homework_data in zip(batch, homework_data_list):
+                    # Handle exceptions
+                    if isinstance(homework_data, Exception):
+                        logger.error(f"Error fetching homework for lesson {lesson_id}: {homework_data}")
+                        failed += 1
+                        continue
+                        
+                    if homework_data is None:
+                        # No homework data found
+                        result[lesson_id] = None
+                    elif not homework_data:  # Empty dict
+                        # Empty homework
+                        result[lesson_id] = Homework(
+                            lesson_id=lesson_id,
+                            subject_code="Unknown",  # We don't have subject code in batch mode
+                            content="",
+                            is_empty=True
+                        )
+                    else:
+                        # Valid homework
+                        result[lesson_id] = Homework(
+                            lesson_id=lesson_id,
+                            subject_code="Unknown",  # We don't have subject code in batch mode
+                            content=homework_data.get("description", ""),
+                            is_empty=not homework_data.get("description", "")
+                        )
+                    
+                    processed += 1
+                
+                # Log progress
+                logger.info(f"Processed {processed}/{total_lessons} lessons, {failed} failed")
+                
+            return result
+                
+        except Exception as e:
+            logger.error(f"Error in batch homework extraction: {e}")
+            logger.info("Falling back to Playwright extraction")
+            return await self._fallback_extract_multiple_homework(page, lesson_ids, batch_size)
+
+    async def _fallback_extract_multiple_homework(self, page: Page, lesson_ids: List[str], batch_size: int = 3) -> Dict[str, Optional[Homework]]:
+        """
+        Fallback method using Playwright for batch homework extraction.
+        
+        Args:
+            page: The Playwright page object
+            lesson_ids: List of lesson IDs
+            batch_size: Number of homework items to process in parallel
+            
+        Returns:
+            Dict[str, Optional[Homework]]: Dictionary mapping lesson IDs to homework data
+        """
+        # We'll reuse the PlaywrightExtractionService implementation
+        playwright_extractor = PlaywrightExtractionService()
+        return await playwright_extractor.extract_multiple_homework(page, lesson_ids, batch_size)
+
+    async def extract_student_info(self, page: Page) -> Dict[str, str]:
+        """
+        Extract student information from the page.
+        
+        Args:
+            page: The Playwright page object
+            
+        Returns:
+            Dict[str, str]: Dictionary of student information
+        """
+        # For now, delegate to the Playwright-based implementation
+        # We'll implement an API-based version if possible
+        playwright_extractor = PlaywrightExtractionService()
+        return await playwright_extractor.extract_student_info(page)
+        
+    async def get_student_id(self, page: Page) -> Optional[str]:
+        """
+        Extract the student ID from the page.
+        
+        Args:
+            page: The Playwright page object
+            
+        Returns:
+            Optional[str]: The student ID or None if not found
+        """
+        # Import here to avoid circular imports
+        from glasir_timetable.navigation import get_student_id
+        
+        try:
+            return await get_student_id(page)
+        except Exception as e:
+            logger.error(f"Error extracting student ID: {e}")
+            return None 

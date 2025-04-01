@@ -16,11 +16,23 @@ from bs4 import BeautifulSoup
 import re
 import os
 import json
+from asyncio import Semaphore
+import backoff # Using backoff decorator for retries
 
 from playwright.async_api import Page
 
 from glasir_timetable import logger
-from glasir_timetable.extractors.homework_parser import clean_homework_text
+from glasir_timetable.extractors.homework_parser import clean_homework_text, parse_homework_html_response_structured
+from glasir_timetable.extractors.teacher_map import parse_teacher_map_html_response
+from .session import AuthSessionManager, get_dynamic_session_params
+from .utils.error_utils import handle_errors, GlasirScrapingError
+from .constants import (
+    GLASIR_BASE_URL,
+    DEFAULT_HEADERS,
+    NOTE_ASP_URL,
+    TEACHER_MAP_URL,
+    TIMETABLE_INFO_URL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,91 +45,41 @@ async def extract_lname_from_page(page) -> Optional[str]:
         
     Returns:
         String containing the lname value in the format "Ford#####,##", or None if not found
+        
+    Note:
+        This function is deprecated. Use get_dynamic_session_params from session module instead.
     """
+    logger.warning("extract_lname_from_page is deprecated, use get_dynamic_session_params instead")
     try:
-        # Check if MyUpdate function exists on the page
-        has_my_update = await page.evaluate("typeof MyUpdate === 'function'")
-        
-        if not has_my_update:
-            logger.warning("MyUpdate function not found on page, cannot extract lname")
-            analysis_results = await analyze_lname_values(page)
-            
-            # Try to find a usable lname value from the analysis
-            if analysis_results["potential_lname_values"]:
-                # Find values that match the expected format (Ford#####,##)
-                ford_values = [v for v in analysis_results["potential_lname_values"] 
-                              if v.startswith("Ford") and "," in v]
-                
-                if ford_values:
-                    lname_value = ford_values[0]
-                    return lname_value
-                else:
-                    # Just use the first value as a best guess
-                    lname_value = analysis_results["potential_lname_values"][0]
-                    return lname_value
-            
-            return None
-        
-        # Extract lname value from the MyUpdate function
-        my_update_str = await page.evaluate("MyUpdate.toString()")
-        
-        lname_value = await page.evaluate("""() => {
-            if (typeof MyUpdate !== 'function') {
-                return null;
-            }
-            
-            const myUpdateStr = MyUpdate.toString();
-            const lnameMatch = myUpdateStr.match(/lname=([^&"]+)/);
-            return lnameMatch ? lnameMatch[1] : null;
-        }""")
-        
-        if lname_value:
-            return lname_value
-        else:
-            logger.warning("Failed to extract lname value from MyUpdate function")
-            
-            # Look for lname in any form on the page
-            alt_lname = await page.evaluate("""() => {
-                // Look for any "lname" references in page source
-                const pageSource = document.documentElement.outerHTML;
-                const lnameMatches = pageSource.match(/lname=([^&"]+)/g);
-                return lnameMatches ? JSON.stringify(lnameMatches) : null;
-            }""")
-            
-            if alt_lname:
-                # Try to extract a usable value from these references
-                try:
-                    matches = json.loads(alt_lname)
-                    if matches:
-                        # Extract the first value
-                        first_match = matches[0].replace("lname=", "")
-                        return first_match
-                except:
-                    pass
-            
-            # Try the comprehensive analysis as a last resort
-            analysis_results = await analyze_lname_values(page)
-            
-            # Try to find a usable lname value from the analysis
-            if analysis_results["potential_lname_values"]:
-                # Find values that match the expected format (Ford#####,##)
-                ford_values = [v for v in analysis_results["potential_lname_values"] 
-                              if v.startswith("Ford") and "," in v]
-                
-                if ford_values:
-                    lname_value = ford_values[0]
-                    return lname_value
-                else:
-                    # Just use the first value as a best guess
-                    lname_value = analysis_results["potential_lname_values"][0]
-                    return lname_value
-                
-            return None
+        lname, _ = await get_dynamic_session_params(page)
+        return lname
     except Exception as e:
-        logger.error(f"Error extracting lname value: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error(f"Error in extract_lname_from_page: {e}")
         return None
+
+async def extract_timer_value_from_page(page) -> Optional[int]:
+    """
+    Extract the timer value used in the MyUpdate function.
+    
+    Args:
+        page: Playwright page object with access to the loaded timetable
+        
+    Returns:
+        Integer timer value or None if not found
+        
+    Note:
+        This function is deprecated. Use get_dynamic_session_params from session module instead.
+    """
+    logger.warning("extract_timer_value_from_page is deprecated, use get_dynamic_session_params instead")
+    try:
+        _, timer = await get_dynamic_session_params(page)
+        return timer
+    except Exception as e:
+        logger.error(f"Error in extract_timer_value_from_page: {e}")
+        # Return a fallback value
+        fallback = int(time.time() * 1000)
+        logger.warning(f"Using fallback value due to error: {fallback}")
+        return fallback
 
 async def fetch_homework_for_lesson(
     cookies: Dict[str, str],
@@ -323,64 +285,6 @@ def parse_homework_html_response(html_content: str) -> Dict[str, str]:
         logger.error(f"Error parsing homework HTML: {e}")
         
     return homework_map
-
-async def extract_timer_value_from_page(page) -> Optional[int]:
-    """
-    Extract the timer value used in the MyUpdate function.
-    
-    Args:
-        page: Playwright page object with access to the loaded timetable
-        
-    Returns:
-        Integer timer value or None if not found
-    """
-    try:
-        # Check if we're on a timetable page
-        timetable_found = await page.locator("table.time_8_16").count() > 0
-        
-        # First try direct approach - get timer from window object
-        has_timer = await page.evaluate("typeof window.timer !== 'undefined'")
-        
-        if has_timer:
-            timer_value = await page.evaluate("window.timer")
-            if timer_value is not None:
-                return timer_value
-            else:
-                logger.warning("Timer variable exists but is null or undefined")
-        else:
-            logger.warning("Timer variable not found on page")
-            
-        # Try to find timer in scripts
-        alt_timer = await page.evaluate("""() => {
-            // Check for timer in any script
-            const scripts = Array.from(document.querySelectorAll('script'));
-            for (const script of scripts) {
-                if (script.textContent) {
-                    const timerMatch = script.textContent.match(/timer\\s*=\\s*(\\d+)/);
-                    if (timerMatch) {
-                        return parseInt(timerMatch[1], 10);
-                    }
-                }
-            }
-            return null;
-        }""")
-        
-        if alt_timer:
-            return alt_timer
-        
-        # Fallback to a timestamp similar to what the page would use
-        fallback = int(time.time() * 1000) 
-        logger.warning(f"No timer found, using fallback value: {fallback}")
-        return fallback
-    except Exception as e:
-        logger.error(f"Error extracting timer value: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        
-        # Return a fallback value
-        fallback = int(time.time() * 1000)
-        logger.warning(f"Using fallback value due to error: {fallback}")
-        return fallback
 
 async def analyze_lname_values(page) -> Dict[str, Any]:
     """
@@ -724,7 +628,7 @@ async def fetch_teacher_mapping(
                 return {}
                 
             # Parse the HTML to extract teacher mapping
-            return parse_teacher_html_response(response.text)
+            return parse_teacher_map_html_response(response.text)
             
     except Exception as e:
         logger.error(f"Error fetching teacher mapping: {e}")
@@ -778,7 +682,8 @@ async def fetch_weeks_data(
     cookies: Dict[str, str],
     student_id: str,
     lname_value: str = None,
-    timer_value: int = None
+    timer_value: int = None,
+    v_override: str = None
 ) -> Dict[str, Any]:
     """
     Fetch all available weeks data directly using the udvalg.asp endpoint without navigating the page.
@@ -788,6 +693,7 @@ async def fetch_weeks_data(
         student_id: The student ID (GUID) for the current user
         lname_value: Optional dynamically extracted lname value
         timer_value: Optional timer value extracted from the page
+        v_override: Override for the 'v' parameter to access different academic years
         
     Returns:
         Dictionary containing weeks data with week numbers, offsets, and dates
@@ -809,7 +715,7 @@ async def fetch_weeks_data(
             "lname": lname_value if lname_value else "Ford28731,48",
             "q": "stude",
             "id": student_id,
-            "v": "-1"  # Can be any week offset
+            "v": v_override if v_override is not None else "-1"  # Use override value if provided
         }
         
         headers = {
@@ -852,56 +758,137 @@ def parse_weeks_html_response(html_content: str) -> Dict[str, Any]:
         "current_week": None
     }
     
+    if not html_content:
+        logger.warning("Empty HTML content provided to weeks parser")
+        return result
+        
     try:
+        # Log a snippet of the HTML for debugging
+        html_snippet = html_content[:500] + "..." if len(html_content) > 500 else html_content
+        logger.debug(f"Parsing weeks data from HTML snippet: {html_snippet}")
+        
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        # Extract date range for the current week
+        # Extract date range for the current week using multiple methods
         date_range_text = None
+        
+        # Method 1: Look for date patterns in text
         for text in soup.stripped_strings:
             if re.match(r'\d{2}\.\d{2}\.\d{4}\s*-\s*\d{2}\.\d{2}\.\d{4}', text):
                 date_range_text = text
+                logger.debug(f"Found date range using method 1: {date_range_text}")
                 break
         
-        # Extract all week links
-        week_links = soup.select('a.UgeKnap, a.UgeKnapValgt, a.UgeKnapAktuel')
+        # Method 2: Look for specific elements that often contain date ranges
+        if not date_range_text:
+            date_containers = soup.select('.UgeTekst, .CurrentWeekText, div.WeekDate')
+            for container in date_containers:
+                text = container.get_text(strip=True)
+                if re.search(r'\d{2}\.\d{2}\.\d{4}', text):
+                    date_range_text = text
+                    logger.debug(f"Found date range using method 2: {date_range_text}")
+                    break
+                
+        # Extract all week links with detailed error tracking
+        css_selectors = [
+            'a.UgeKnap', 'a.UgeKnapValgt', 'a.UgeKnapAktuel',  # Primary selectors
+            'a[onclick*="v="]'                                  # Fallback selector
+        ]
         
+        week_links = soup.select(', '.join(css_selectors))
+        logger.debug(f"Found {len(week_links)} week links using selectors: {css_selectors}")
+        
+        if not week_links:
+            logger.warning("No week links found with primary selectors, attempting alternative approach")
+            # Alternative approach: Find all links with 'onclick' containing 'v='
+            week_links = soup.find_all('a', onclick=lambda v: v and 'v=' in v)
+            logger.debug(f"Found {len(week_links)} week links using alternative approach")
+            
+            if not week_links:
+                # Try another approach with broader matching
+                all_links = soup.find_all('a')
+                week_links = [link for link in all_links if link.get('onclick') and 'v=' in link.get('onclick')]
+                logger.debug(f"Found {len(week_links)} week links using broadest approach")
+                
+        week_count = 0
         for link in week_links:
-            week_data = {}
-            
-            # Extract week number
-            week_number = link.text.strip()
-            if week_number.startswith("Vika "):
-                week_number = week_number.replace("Vika ", "")
-            
-            week_data["week_number"] = week_number
-            
-            # Extract onclick attribute to get the week offset
-            onclick = link.get('onclick', '')
-            offset_match = re.search(r'v=(-?\d+)', onclick)
-            if offset_match:
-                week_data["offset"] = int(offset_match.group(1))
-            else:
-                continue  # Skip if we can't get the offset
-            
-            # Determine if this is the current week
-            if 'UgeKnapValgt' in link.get('class', []) or 'UgeKnapAktuel' in link.get('class', []):
-                week_data["is_current"] = True
-                if date_range_text:
-                    week_data["date_range"] = date_range_text
-                result["current_week"] = week_data
-            else:
-                week_data["is_current"] = False
-            
-            result["weeks"].append(week_data)
+            try:
+                week_data = {}
+                
+                # Extract week number
+                week_number = link.text.strip()
+                if week_number.startswith("Vika "):
+                    week_number = week_number.replace("Vika ", "")
+                week_data["week_number"] = week_number
+                
+                # Extract onclick attribute to get the week offset
+                onclick = link.get('onclick', '')
+                if not onclick:
+                    logger.warning(f"Week link missing onclick attribute: {link}")
+                    continue
+                    
+                offset_match = re.search(r'v=(-?\d+)', onclick)
+                if offset_match:
+                    week_data["offset"] = int(offset_match.group(1))
+                else:
+                    logger.warning(f"Cannot extract offset from onclick: {onclick}")
+                    continue  # Skip if we can't get the offset
+                
+                # Determine if this is the current week
+                css_classes = link.get('class', [])
+                is_current = any(cls in css_classes for cls in ['UgeKnapValgt', 'UgeKnapAktuel'])
+                week_data["is_current"] = is_current
+                
+                if is_current:
+                    if date_range_text:
+                        week_data["date_range"] = date_range_text
+                    result["current_week"] = week_data.copy()  # Use copy to avoid reference issues
+                
+                result["weeks"].append(week_data)
+                week_count += 1
+            except Exception as e:
+                logger.warning(f"Error processing week link {link}: {e}")
+                continue  # Skip this link and continue with others
         
-        logger.info(f"Extracted {len(result['weeks'])} weeks from API response")
+        # Check if we got at least some useful data
+        if week_count == 0:
+            logger.error("Failed to extract any valid week data")
+            # Save HTML to debug file if we couldn't extract any data
+            try:
+                debug_path = "debug_weeks_html.html"
+                with open(debug_path, "w") as f:
+                    f.write(html_content)
+                logger.info(f"Saved problematic HTML to {debug_path} for debugging")
+            except Exception as save_err:
+                logger.warning(f"Could not save debug HTML: {save_err}")
+        else:
+            logger.info(f"Successfully extracted {week_count} weeks from API response")
+            
+            # Sort weeks by offset for easier processing
+            result["weeks"].sort(key=lambda w: w.get("offset", 0))
+            
+            # If we didn't find a current week, try to infer it
+            if not result["current_week"] and result["weeks"]:
+                # The current week typically has offset 0, or is the closest to 0
+                closest_to_zero = min(result["weeks"], key=lambda w: abs(w.get("offset", 0)))
+                logger.info(f"Inferred current week with offset {closest_to_zero.get('offset')} as no explicit current week was marked")
+                result["current_week"] = closest_to_zero
         
     except Exception as e:
         logger.error(f"Error parsing weeks HTML: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        # Try to save HTML for debugging serious errors
+        try:
+            debug_path = "debug_weeks_html_error.html"
+            with open(debug_path, "w") as f:
+                f.write(html_content)
+            logger.info(f"Saved HTML with parse error to {debug_path}")
+        except Exception:
+            pass
     
-    return result 
+    return result
 
 async def fetch_timetable_for_week(
     cookies: Dict[str, str],
@@ -966,3 +953,350 @@ async def fetch_timetable_for_week(
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         return None 
+
+async def _fetch_single_timetable_with_semaphore(
+    semaphore: Semaphore,
+    cookies: Dict[str, str],
+    student_id: str,
+    week_offset: int,
+    lname_value: str = None,
+    timer_value: int = None
+) -> tuple[int, Optional[str]]:
+    """Helper function to fetch a single week's timetable within a semaphore context."""
+    async with semaphore:
+        logger.debug(f"Acquired semaphore for fetching week offset {week_offset}")
+        try:
+            html_content = await fetch_timetable_for_week(
+                cookies=cookies,
+                student_id=student_id,
+                week_offset=week_offset,
+                lname_value=lname_value,
+                timer_value=timer_value
+            )
+            return week_offset, html_content
+        finally:
+            logger.debug(f"Released semaphore for week offset {week_offset}")
+
+async def fetch_timetables_for_weeks(
+    cookies: Dict[str, str],
+    student_id: str,
+    week_offsets: List[int],
+    max_concurrent: int = 5,  # Limit concurrent requests for timetables
+    lname_value: str = None,
+    timer_value: int = None
+) -> Dict[int, Optional[str]]:
+    """
+    Fetch timetable HTML for multiple weeks concurrently.
+
+    Args:
+        cookies: Dictionary of cookies from the current browser session.
+        student_id: The student ID (GUID) for the current user.
+        week_offsets: A list of week offsets to fetch timetables for.
+        max_concurrent: Maximum number of concurrent requests.
+        lname_value: Optional dynamically extracted lname value.
+        timer_value: Optional timer value extracted from the page.
+
+    Returns:
+        A dictionary mapping each week_offset to its corresponding HTML timetable string,
+        or None if an error occurred for that specific week.
+    """
+    if not week_offsets:
+        return {}
+
+    semaphore = Semaphore(max_concurrent)
+    tasks = []
+    
+    # Reuse timer_value if provided, otherwise get a new one (consistent across requests)
+    current_timer_value = timer_value if timer_value is not None else int(time.time() * 1000)
+
+    for offset in week_offsets:
+        task = asyncio.create_task(
+            _fetch_single_timetable_with_semaphore(
+                semaphore=semaphore,
+                cookies=cookies,
+                student_id=student_id,
+                week_offset=offset,
+                lname_value=lname_value,
+                timer_value=current_timer_value # Use consistent timer value
+            )
+        )
+        tasks.append(task)
+
+    logger.info(f"Fetching timetables for {len(week_offsets)} weeks with max concurrency {max_concurrent}")
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    logger.info("Finished fetching all specified weeks.")
+
+    timetable_data = {}
+    for result in results:
+        if isinstance(result, Exception):
+            logger.error(f"Error fetching timetable during concurrent fetch: {result}")
+            # Cannot easily map back to week_offset if an exception occurred *before* calling the helper
+            # Consider adding offset to exception context if needed later
+        elif result is not None:
+            offset, html_content = result
+            timetable_data[offset] = html_content
+        # Handle cases where the helper might return None or unexpected format (though it shouldn't)
+        
+    # Ensure all requested offsets are keys in the result, even if fetching failed
+    for offset in week_offsets:
+        if offset not in timetable_data:
+             timetable_data[offset] = None # Mark as failed/not found
+
+    return timetable_data 
+
+async def get_student_id(page) -> Optional[str]:
+    """
+    Extract the student ID (GUID) from the current page.
+    
+    Args:
+        page: Playwright page object with access to the loaded timetable
+        
+    Returns:
+        String containing the student ID, or None if not found
+    """
+    try:
+        # Try extracting from MyUpdate function if it exists
+        has_my_update = await page.evaluate("typeof MyUpdate === 'function'")
+        
+        if has_my_update:
+            student_id = await page.evaluate("""() => {
+                if (typeof MyUpdate !== 'function') {
+                    return null;
+                }
+                
+                // Extract from MyUpdate function
+                const myUpdateStr = MyUpdate.toString();
+                const idMatch = myUpdateStr.match(/[&?]id=([0-9a-fA-F-]{36})/);
+                return idMatch ? idMatch[1] : null;
+            }""")
+            
+            if student_id:
+                logger.info(f"Extracted student ID from MyUpdate function: {student_id[:5]}...")
+                return student_id
+        
+        # Try extracting from the URL if present
+        url = page.url
+        id_match = re.search(r'[?&]id=([0-9a-fA-F-]{36})', url)
+        if id_match:
+            student_id = id_match.group(1)
+            logger.info(f"Extracted student ID from URL: {student_id[:5]}...")
+            return student_id
+            
+        # Try looking in the page source
+        student_id = await page.evaluate("""() => {
+            // Search for GUID pattern in any script
+            const guidPattern = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
+            
+            // Check scripts first
+            const scripts = Array.from(document.querySelectorAll('script'));
+            for (const script of scripts) {
+                if (script.textContent) {
+                    const match = script.textContent.match(guidPattern);
+                    if (match) {
+                        return match[0];
+                    }
+                }
+            }
+            
+            // Check for any links containing id parameter with GUID
+            const links = Array.from(document.querySelectorAll('a[href*="id="]'));
+            for (const link of links) {
+                const match = link.href.match(/[?&]id=([0-9a-fA-F-]{36})/);
+                if (match) {
+                    return match[1];
+                }
+            }
+            
+            // Look in page source as last resort
+            const pageSource = document.documentElement.outerHTML;
+            const sourceMatch = pageSource.match(guidPattern);
+            return sourceMatch ? sourceMatch[0] : null;
+        }""")
+        
+        if student_id:
+            logger.info(f"Extracted student ID from page source: {student_id[:5]}...")
+            return student_id
+            
+        logger.warning("Could not extract student ID from the page")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error extracting student ID: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return None 
+
+class ApiClient:
+    """Client for interacting with Glasir's API endpoints."""
+    
+    def __init__(self, client: httpx.AsyncClient, session_manager: AuthSessionManager):
+        """Initialize the API client with an HTTP client and session manager."""
+        self._client = client
+        self._session_manager = session_manager
+        
+    async def initialize_session_params(self, page: Optional[Page] = None) -> None:
+        """
+        Initialize session parameters (lname and timer) using the new minimized approach.
+        
+        Args:
+            page: Authenticated Playwright page object
+        """
+        if page:
+            # Use the minimized extraction approach
+            lname, timer = await get_dynamic_session_params(page)
+            
+            # Update session manager with these values
+            if lname:
+                self._session_manager._lname = lname
+                self._session_manager._cached_params["lname"] = lname
+            if timer:
+                self._session_manager._timer = str(timer)  # Convert to string as expected by session manager
+                self._session_manager._cached_params["timer"] = str(timer)
+        else:
+            # Fall back to the standard fetching mechanism
+            await self._session_manager.fetch_and_cache_params()
+
+    @handle_errors(default_return=None, error_category="fetching_homework_details")
+    @backoff.on_exception(backoff.expo,
+                          (httpx.RequestError, httpx.HTTPStatusError, GlasirScrapingError),
+                          max_tries=3,
+                          logger=logger,
+                          on_backoff=lambda details: logger.warning(f"Retrying homework fetch in {details['wait']:.1f}s after {details['tries']} tries. Error: {details['exception']}"))
+    async def fetch_homework_details(self, lesson_id: str, student_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch homework details for a specific lesson.
+        
+        Args:
+            lesson_id: ID of the lesson to fetch homework for.
+            student_id: ID of the student.
+            
+        Returns:
+            Dict with structured homework data or None if request failed.
+        """
+        # Get dynamic parameters from session manager
+        params = await self._session_manager.get_params()
+        
+        payload = {
+            "id": lesson_id,
+            "elev": student_id, # Assuming 'elev' is the correct param for student ID here
+            "lname": params["lname"],
+            "timer": params["timer"],
+        }
+        logger.debug(f"Fetching homework for lesson {lesson_id} with payload: {payload}")
+
+        try:
+            response = await self._client.post(
+                NOTE_ASP_URL, data=payload, headers=DEFAULT_HEADERS
+            )
+            response.raise_for_status() # Check for HTTP errors
+
+            # Delegate parsing to the extractor
+            homework_data = parse_homework_html_response_structured(response.text)
+            logger.debug(f"Successfully fetched and parsed homework for lesson {lesson_id}.")
+            return homework_data
+
+        except httpx.RequestError as e:
+            logger.error(f"Request failed for lesson {lesson_id}: {e}")
+            raise GlasirScrapingError(f"Network error fetching homework for lesson {lesson_id}") from e
+        except httpx.HTTPStatusError as e:
+             logger.error(f"HTTP error {e.response.status_code} for lesson {lesson_id}: {e.response.text[:200]}")
+             if e.response.status_code >= 500:
+                 raise GlasirScrapingError(f"Server error ({e.response.status_code}) fetching homework for lesson {lesson_id}") from e
+             else: # Treat 4xx as potentially recoverable/ignorable depending on caller
+                 logger.warning(f"Client error ({e.response.status_code}) fetching homework for lesson {lesson_id}.")
+                 return None # Or raise specific error? Returning None for now.
+        except Exception as e:
+            logger.exception(f"Unexpected error parsing homework for lesson {lesson_id}: {e}")
+            # Reraise unexpected errors if not handled by @handle_errors
+            raise GlasirScrapingError(f"Parsing error for homework lesson {lesson_id}") from e
+
+    @handle_errors(default_return={}, error_category="fetching_teacher_map")
+    @backoff.on_exception(backoff.expo,
+                          (httpx.RequestError, httpx.HTTPStatusError, GlasirScrapingError),
+                          max_tries=3,
+                          logger=logger,
+                          on_backoff=lambda details: logger.warning(f"Retrying teacher map fetch in {details['wait']:.1f}s after {details['tries']} tries. Error: {details['exception']}"))
+    async def fetch_teacher_map(self, student_id: str) -> Dict[str, str]:
+        """
+        Fetches the teacher initials to full name mapping using the laerer.asp endpoint.
+
+        Args:
+            student_id: The ID of the student.
+
+        Returns:
+            A dictionary mapping teacher initials to full names, or {} on failure.
+        """
+        params = await self._session_manager.get_params()
+        payload = {
+            "elev": student_id, # Assuming 'elev' is the correct param
+            "lname": params["lname"],
+            "timer": params["timer"],
+        }
+        logger.debug("Fetching teacher map with payload: %s", payload)
+        try:
+            response = await self._client.post(
+                TEACHER_MAP_URL, data=payload, headers=DEFAULT_HEADERS
+            )
+            response.raise_for_status()
+
+            # Delegate parsing to the extractor
+            teacher_map = parse_teacher_map_html_response(response.text)
+            logger.info(f"Successfully fetched and parsed teacher map ({len(teacher_map)} entries).")
+            return teacher_map
+
+        except httpx.RequestError as e:
+            logger.error(f"Request failed for teacher map: {e}")
+            raise GlasirScrapingError("Network error fetching teacher map") from e
+        except httpx.HTTPStatusError as e:
+             logger.error(f"HTTP error {e.response.status_code} for teacher map: {e.response.text[:200]}")
+             raise GlasirScrapingError(f"HTTP error ({e.response.status_code}) fetching teacher map") from e
+        except Exception as e:
+            logger.exception(f"Unexpected error parsing teacher map: {e}")
+            raise GlasirScrapingError("Parsing error for teacher map") from e
+
+    @handle_errors(default_return=None, error_category="fetching_timetable_info")
+    @backoff.on_exception(backoff.expo,
+                          (httpx.RequestError, httpx.HTTPStatusError, GlasirScrapingError),
+                          max_tries=3,
+                          logger=logger,
+                          on_backoff=lambda details: logger.warning(f"Retrying timetable info fetch in {details['wait']:.1f}s after {details['tries']} tries. Error: {details['exception']}"))
+    async def fetch_timetable_info_for_week(self, student_id: str, week_number: int, year: int) -> Optional[Dict[str, Any]]:
+        """
+        Fetches timetable structure and week info using the skema_data.asp endpoint.
+
+        Args:
+            student_id: The ID of the student.
+            week_number: The week number.
+            year: The year.
+
+        Returns:
+            A dictionary containing parsed timetable and week info, or None on failure.
+        """
+        params = await self._session_manager.get_params()
+        payload = {
+            "elev": student_id, # Assuming 'elev' is correct
+            "uge": f"{week_number:02d}{str(year)[-2:]}", # Format: WWYY
+            "lname": params["lname"],
+            "timer": params["timer"],
+        }
+        logger.debug(f"Fetching timetable info for week {week_number}/{year} with payload: {payload}")
+        try:
+            response = await self._client.post(
+                TIMETABLE_INFO_URL, data=payload, headers=DEFAULT_HEADERS
+            )
+            response.raise_for_status()
+
+            # For now, we'll just return the raw HTML until we adapt the timetable parser
+            # In the future, we'll use a proper parser from extractors/timetable.py
+            logger.debug(f"Successfully fetched timetable info for week {week_number}/{year}.")
+            return {"html_content": response.text, "needs_parsing": True}
+
+        except httpx.RequestError as e:
+            logger.error(f"Request failed for timetable info week {week_number}/{year}: {e}")
+            raise GlasirScrapingError(f"Network error fetching timetable info for week {week_number}/{year}") from e
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error {e.response.status_code} for timetable info week {week_number}/{year}: {e.response.text[:200]}")
+            raise GlasirScrapingError(f"HTTP error ({e.response.status_code}) fetching timetable info week {week_number}/{year}") from e
+        except Exception as e:
+            logger.exception(f"Unexpected error for timetable info week {week_number}/{year}: {e}")
+            raise GlasirScrapingError(f"Error processing timetable info week {week_number}/{year}") from e 

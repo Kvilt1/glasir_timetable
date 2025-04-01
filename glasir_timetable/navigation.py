@@ -11,6 +11,8 @@ from typing import List, Dict, Any, Optional, Callable, Set
 from contextlib import asynccontextmanager
 from datetime import datetime
 import re
+import json
+import time
 
 from glasir_timetable import logger, add_error
 from glasir_timetable.extractors import extract_timetable_data
@@ -19,15 +21,17 @@ from glasir_timetable.extractors.homework_parser import parse_homework_html_resp
 from glasir_timetable.api_client import (
     fetch_homework_for_lessons,
     fetch_timetable_for_week,
+    fetch_weeks_data,
     extract_lname_from_page,
-    extract_timer_value_from_page
+    extract_timer_value_from_page,
+    fetch_timetables_for_weeks,
+    get_student_id
 )
 from glasir_timetable.js_navigation.js_integration import (
     navigate_to_week_js,
     return_to_baseline_js,
     JavaScriptIntegrationError,
     verify_myupdate_function,
-    get_student_id
 )
 from glasir_timetable.utils import (
     normalize_dates,
@@ -253,14 +257,15 @@ async def process_weeks(page, directions, teacher_map, student_id, output_dir,
                        api_cookies=None, processed_weeks=None, use_api=False):
     """
     Process multiple weeks based on the provided directions/offsets.
+    Fetches timetable HTML concurrently if using the API approach.
     
     Args:
         page: The Playwright page object
         directions: List of week offsets to process
         teacher_map: Dictionary mapping teacher initials to full names
-        student_id: The student ID GUID
+        student_id: The student ID GUID (Only needed if use_api=False)
         output_dir: Directory to save output files
-        api_cookies: Cookies for API requests
+        api_cookies: Cookies for API requests (Required if use_api=True)
         processed_weeks: Set of already processed week numbers
         use_api: Whether to use the API-based approach instead of JavaScript navigation
         
@@ -269,67 +274,332 @@ async def process_weeks(page, directions, teacher_map, student_id, output_dir,
     """
     if processed_weeks is None:
         processed_weeks = set()
+    
+    total_weeks = len(directions)
+    if total_weeks == 0:
+        logger.info("No weeks to process")
+        return 0
         
-    logger.info(f"Processing {len(directions)} additional weeks")
+    logger.info(f"Processing {total_weeks} additional weeks. API mode: {use_api}")
     
-    # Initialize counter for successful weeks
+    # Setup progress tracking
+    start_time = time.time()
     success_count = 0
+    last_progress_time = start_time
+    progress_interval = 5.0  # seconds between progress updates
     
-    # Extract lname and timer values for API calls if needed
-    lname_value = None
-    timer_value = None
+    def log_progress(current, total, step_name=""):
+        nonlocal last_progress_time
+        current_time = time.time()
+        elapsed = current_time - start_time
+        
+        if current > 0 and elapsed > 0:
+            estimated_total = elapsed * total / current
+            remaining = estimated_total - elapsed
+            
+            # Format time nicely
+            if remaining < 60:
+                time_str = f"{remaining:.1f} seconds"
+            elif remaining < 3600:
+                time_str = f"{remaining/60:.1f} minutes"
+            else:
+                time_str = f"{remaining/3600:.1f} hours"
+                
+            logger.info(f"Progress: {current}/{total} weeks {step_name} ({(current/total*100):.1f}%) - Est. remaining: {time_str}")
+        else:
+            logger.info(f"Progress: {current}/{total} weeks {step_name} (0%) - Starting...")
+            
+        last_progress_time = current_time
+    
     if use_api:
+        if not api_cookies:
+            logger.error("API cookies are required for API-based processing.")
+            return 0
+            
+        # --- API-based Concurrent Processing ---
+        lname_value = None
+        timer_value = None
+        week_html_map = {}
+        all_lesson_ids = []
+        processed_data_cache = {} # Cache processed data before homework is added {offset: data}
+        week_details_cache = {} # Cache details needed for saving {offset: {filename, output_path, week_num}}
+
         try:
-            # Extract values needed for API calls
+            # 1. Extract common values needed for API calls
+            student_api_id = await get_student_id(page) # Still need student ID for API
+            if not student_api_id:
+                 logger.error("Failed to get student ID for API calls.")
+                 return 0
+                 
             lname_value = await extract_lname_from_page(page)
             timer_value = await extract_timer_value_from_page(page)
-            logger.info(f"Using API-based approach with lname={lname_value}")
+            logger.info(f"Using API-based approach with lname={lname_value}, timer={timer_value}")
+
+            # 2. Fetch all timetable HTMLs concurrently
+            week_html_map = await fetch_timetables_for_weeks(
+                cookies=api_cookies,
+                student_id=student_api_id,
+                week_offsets=directions,
+                lname_value=lname_value,
+                timer_value=timer_value
+            )
+            logger.info(f"Fetched HTML for {len([html for html in week_html_map.values() if html])} out of {len(directions)} weeks.")
+            
+            # 2.1 Retry logic for any weeks that failed to fetch
+            failed_offsets = [offset for offset in directions if offset not in week_html_map or week_html_map[offset] is None]
+            if failed_offsets:
+                logger.info(f"Retrying {len(failed_offsets)} failed week fetches...")
+                max_retries = 2
+                for retry in range(max_retries):
+                    if not failed_offsets:
+                        break
+                        
+                    logger.info(f"Retry attempt {retry+1}/{max_retries} for offsets: {failed_offsets}")
+                    # Generate a new timer value for retry to avoid caching issues
+                    retry_timer = int(time.time() * 1000)
+                    
+                    # Retry with increased timeout and slightly lower concurrency
+                    retry_html_map = await fetch_timetables_for_weeks(
+                        cookies=api_cookies,
+                        student_id=student_api_id,
+                        week_offsets=failed_offsets,
+                        max_concurrent=min(3, len(failed_offsets)),  # Lower concurrency
+                        lname_value=lname_value,
+                        timer_value=retry_timer
+                    )
+                    
+                    # Update the main map with successful retries
+                    successful_retries = 0
+                    for offset, html in retry_html_map.items():
+                        if html:
+                            week_html_map[offset] = html
+                            successful_retries += 1
+                    
+                    logger.info(f"Retry {retry+1} succeeded for {successful_retries}/{len(failed_offsets)} weeks")
+                    
+                    # Update the list of failed offsets for potential next retry
+                    failed_offsets = [offset for offset in failed_offsets if offset not in retry_html_map or retry_html_map[offset] is None]
+                
+                # Final logging after all retries
+                if failed_offsets:
+                    logger.warning(f"After all retries, still failed to fetch {len(failed_offsets)} weeks: {failed_offsets}")
+                else:
+                    logger.info("Successfully fetched all weeks after retries")
+
         except Exception as e:
-            logger.warning(f"Failed to extract lname/timer values: {e}. Will try to extract them during processing.")
-    
-    # Process each direction (week offset)
-    for direction in directions:
-        try:
-            if use_api:
-                # Process the week using API-based approach
-                result = await process_single_week_api(
-                    page=page,
-                    week_offset=direction,
-                    output_dir=output_dir,
-                    teacher_map=teacher_map,
-                    api_cookies=api_cookies,
+            logger.error(f"Failed during initial API setup or concurrent fetch: {e}")
+            # Proceed to process any HTML that was successfully fetched
+            
+        # 3. Process each week's HTML sequentially (using page for extraction)
+        processed_count = 0
+        for offset in directions:
+            try:
+                week_html = week_html_map.get(offset)
+                if not week_html:
+                    logger.warning(f"Skipping week offset {offset}: No HTML fetched.")
+                    continue
+
+                # Update progress periodically
+                processed_count += 1
+                current_time = time.time()
+                if current_time - last_progress_time >= progress_interval or processed_count == total_weeks:
+                    log_progress(processed_count, total_weeks, "processed")
+
+                # Inject HTML into the page
+                escaped_html = week_html.replace('`', '\\\\`')
+                # Fix triple-quoted string to avoid linter errors
+                js_code = """
+                document.getElementById('MyWindowMain').innerHTML = `{html}`;
+                """.format(html=escaped_html)
+                await page.evaluate(js_code)
+                
+                # Extract data from the injected HTML
+                timetable_data, week_info, lesson_ids = await extract_timetable_data(page, teacher_map)
+
+                if not timetable_data or not week_info:
+                    logger.error(f"Failed to extract timetable data from HTML for week offset {offset}")
+                    continue
+                    
+                # Normalize data
+                year = week_info.get("year")
+                start_date = week_info.get("startDate")
+                end_date = week_info.get("endDate")
+                week_num_raw = week_info.get("weekNumber")
+
+                if start_date and end_date and year:
+                    start_date, end_date = normalize_dates(start_date, end_date, year)
+                    week_info["startDate"] = start_date
+                    week_info["endDate"] = end_date
+                
+                week_num = normalize_week_number(week_num_raw) if week_num_raw else 0
+                week_info["weekNumber"] = week_num
+                timetable_data["weekInfo"] = week_info # Ensure updated info is stored
+
+                # Generate filename and path
+                filename = generate_week_filename(year, week_num, start_date, end_date)
+                output_path = os.path.join(output_dir, filename)
+
+                # Check if already processed (file exists)
+                if os.path.exists(output_path):
+                    logger.info(f"Week already exported (offset {offset}): {filename}")
+                    # Add to processed_weeks set based on filename
+                    if week_num not in processed_weeks:
+                        processed_weeks.add(week_num)
+                        logger.debug(f"Added week {week_num} to processed_weeks set based on existing file.")
+                    success_count += 1 # Count skipped as success for this run's purpose
+                    continue # Skip further processing for this week
+
+                # Store data and details for later homework association and saving
+                processed_data_cache[offset] = timetable_data
+                all_lesson_ids.extend(lesson_ids)
+                week_details_cache[offset] = {
+                    "filename": filename, 
+                    "output_path": output_path,
+                    "week_num": week_num,
+                    "year": year,
+                    "start_date": start_date,
+                    "end_date": end_date
+                }
+                
+            except Exception as e:
+                logger.error(f"Error processing fetched HTML for week offset {offset}: {e}")
+                import traceback
+                logger.debug(f"Traceback: {traceback.format_exc()}")
+
+        # 4. Fetch all homework concurrently
+        homework_map = {}
+        if all_lesson_ids:
+            unique_lesson_ids = list(set(all_lesson_ids))
+            logger.info(f"Fetching homework for {len(unique_lesson_ids)} unique lessons across processed weeks.")
+            try:
+                # Update progress for homework fetch
+                log_progress(0, len(processed_data_cache), "homework fetch")
+                
+                # Consider using fetch_homework_for_lessons_with_retry if available/needed
+                homework_map = await fetch_homework_for_lessons(
+                    cookies=api_cookies,
+                    lesson_ids=unique_lesson_ids,
                     lname_value=lname_value,
                     timer_value=timer_value
                 )
                 
-                if result.get("success", False):
+                # Update progress after homework fetch
+                log_progress(len(processed_data_cache), len(processed_data_cache), "homework fetch")
+                logger.info(f"Fetched homework for {len(homework_map)} lessons.")
+            except Exception as e:
+                logger.error(f"Error fetching homework concurrently: {e}")
+                import traceback
+                logger.debug(f"Traceback: {traceback.format_exc()}")
+
+        # 5. Associate homework and save files
+        saved_count = 0
+        for offset, timetable_data in processed_data_cache.items():
+            try:
+                # Add homework to timetable data
+                if homework_map:
+                    for event in timetable_data.get("events", []):
+                        lesson_id = event.get("lessonId")
+                        if lesson_id and lesson_id in homework_map:
+                            event["description"] = homework_map[lesson_id] # Assuming description field is correct
+                
+                # Save the processed data
+                details = week_details_cache.get(offset)
+                if details:
+                    output_path = details["output_path"]
+                    filename = details["filename"]
+                    week_num = details["week_num"]
+                    
+                    # Ensure we have a valid filename by regenerating it if needed
+                    if filename.endswith("0 - None-None.json") or "None" in filename:
+                        year = details.get("year", datetime.now().year)
+                        start_date = details.get("start_date", "")
+                        end_date = details.get("end_date", "")
+                        week_num = details.get("week_num", 0)
+                        
+                        # Extract from timetable_data.weekInfo if we have it
+                        if "weekInfo" in timetable_data:
+                            week_info = timetable_data["weekInfo"]
+                            if not year or year == 0:
+                                year = week_info.get("year", datetime.now().year)
+                            if not week_num or week_num == 0:
+                                week_num = week_info.get("weekNumber", offset)
+                            if not start_date:
+                                start_date = week_info.get("startDate", "")
+                            if not end_date:
+                                end_date = week_info.get("endDate", "")
+                                
+                        # If we're still missing the week number, use the offset as a last resort
+                        if not week_num or week_num == 0:
+                            # For negative offsets, they are likely previous weeks
+                            # For positive offsets, they are likely next weeks
+                            current_week = datetime.now().isocalendar()[1]
+                            week_num = current_week + offset
+                            
+                        # Create a better filename
+                        filename = f"{year} Vika {week_num}"
+                        if start_date and end_date:
+                            filename += f" - {start_date}-{end_date}"
+                        filename += ".json"
+                        
+                        output_path = os.path.join(output_dir, filename)
+                    
+                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                    with open(output_path, 'w', encoding='utf-8') as f:
+                        json.dump(timetable_data, f, ensure_ascii=False, indent=4)
+                    
+                    saved_count += 1
+                    if saved_count % 5 == 0 or saved_count == len(processed_data_cache):
+                        log_progress(saved_count, len(processed_data_cache), "saved")
+                        
+                    logger.info(f"Successfully processed and saved week offset {offset} as {filename}")
+                    
+                    if week_num not in processed_weeks:
+                         processed_weeks.add(week_num) # Add successfully saved week
                     success_count += 1
-                    # Add to processed weeks if we can extract the week number
-                    if result.get("filename"):
-                        # Extract week number from filename (e.g., "2025 Vika 14 - 2025.03.31-2025.04.06.json")
-                        match = re.search(r'Vika (\d+)', result.get("filename", ""))
-                        if match:
-                            week_num = int(match.group(1))
-                            processed_weeks.add(week_num)
-            else:
+                else:
+                     logger.error(f"Could not save data for offset {offset}: Missing cached details.")
+
+            except Exception as e:
+                logger.error(f"Error associating homework or saving file for offset {offset}: {e}")
+                import traceback
+                logger.debug(f"Traceback: {traceback.format_exc()}")
+                
+        # --- End of API-based Concurrent Processing ---
+
+    else:
+        # --- Original JS-based Sequential Processing ---
+        logger.info("Using JS-based navigation approach.")
+        if not student_id:
+            logger.warning("Student ID might be required for JS navigation but was not provided.")
+            
+        for i, direction in enumerate(directions):
+            # Update progress periodically
+            if (i+1) % 5 == 0 or i+1 == total_weeks or time.time() - last_progress_time >= progress_interval:
+                log_progress(i+1, total_weeks, "JS navigation")
+                
+            try:
                 # Process the week using JS-based navigation
+                # Note: process_single_week handles its own file saving and processed_weeks update
                 success = await process_single_week(
                     page=page,
                     week_offset=direction,
                     teacher_map=teacher_map,
-                    student_id=student_id,
+                    student_id=student_id, # Pass student_id here
                     output_dir=output_dir,
-                    api_cookies=api_cookies,
-                    processed_weeks=processed_weeks
+                    api_cookies=api_cookies, # May be used internally by process_single_week for homework
+                    processed_weeks=processed_weeks # Pass the set to be updated
                 )
                 
                 if success:
                     success_count += 1
                 
-        except Exception as e:
-            logger.error(f"Error processing week with offset {direction}: {e}")
-    
-    logger.info(f"Successfully processed {success_count} of {len(directions)} additional weeks")
+            except Exception as e:
+                logger.error(f"Error processing week with offset {direction} using JS method: {e}")
+                import traceback
+                logger.debug(f"Traceback: {traceback.format_exc()}")
+        # --- End of JS-based Sequential Processing ---
+
+    logger.info(f"Finished processing. Successfully processed/skipped {success_count} of {len(directions)} requested weeks.")
     return success_count
 
 
@@ -372,7 +642,8 @@ async def process_single_week_api(
     timer_value=None
 ):
     """
-    Process a single week using the API-based approach.
+    DEPRECATED by the concurrent logic in process_weeks when use_api=True.
+    Process a single week using the API-based approach. Kept for potential other uses or reference.
     
     Args:
         page: The Playwright page object
@@ -386,6 +657,7 @@ async def process_single_week_api(
     Returns:
         dict: Result of processing, including success status and any errors
     """
+    logger.warning("process_single_week_api is deprecated for use within process_weeks(use_api=True)")
     try:
         # Extract timetable using API-based approach
         timetable_data, week_info, lesson_ids = await navigate_and_extract_api(
@@ -424,9 +696,24 @@ async def process_single_week_api(
         if "weekInfo" in timetable_data and "weekNumber" in timetable_data["weekInfo"]:
             timetable_data["weekInfo"]["weekNumber"] = normalize_week_number(timetable_data["weekInfo"]["weekNumber"])
         
-        # Generate the output filename and path
-        filename = generate_week_filename(timetable_data)
-        output_path = os.path.join(output_dir, filename)
+        # Extract values needed for filename generation
+        if "weekInfo" in timetable_data:
+            week_info_dict = timetable_data["weekInfo"]
+            year = week_info_dict.get("year", datetime.now().year)
+            week_num = week_info_dict.get("weekNumber", 0)
+            start_date = week_info_dict.get("startDate", "")
+            end_date = week_info_dict.get("endDate", "")
+            
+            # Generate the output filename and path
+            filename = generate_week_filename(year, week_num, start_date, end_date)
+            output_path = os.path.join(output_dir, filename)
+        else:
+            # Fallback if weekInfo is not available
+            logger.error("Could not generate filename: weekInfo missing from timetable data")
+            return {
+                "success": False,
+                "error": "Could not generate filename: weekInfo missing from timetable data"
+            }
         
         # If file already exists, skip it
         if os.path.exists(output_path):
@@ -466,7 +753,9 @@ async def navigate_and_extract_api(
     timer_value=None
 ):
     """
+    DEPRECATED by the concurrent logic in process_weeks when use_api=True.
     Navigate to a specific week and extract timetable data using API-based navigation.
+    Kept for potential other uses or reference.
     
     Args:
         page: The Playwright page object
@@ -479,6 +768,7 @@ async def navigate_and_extract_api(
     Returns:
         tuple: (timetable_data, week_info, lesson_ids)
     """
+    logger.warning("navigate_and_extract_api is deprecated for use within process_weeks(use_api=True)")
     try:
         # Get student ID for API call
         student_id = await get_student_id(page)
@@ -541,3 +831,80 @@ async def navigate_and_extract_api(
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         return None, None, [] 
+
+
+async def get_student_id(page):
+    """
+    Extract the student ID from the given page.
+    
+    This function tries multiple methods to extract the student ID:
+    1. First tries the JS integration function if available
+    2. Falls back to direct extraction from the page content if JS integration is not available
+    
+    Args:
+        page: The Playwright page object
+        
+    Returns:
+        str: The student ID or None if not found
+    """
+    try:
+        # First try using the JS integration function
+        from glasir_timetable.js_navigation.js_integration import get_student_id as js_get_student_id
+        
+        try:
+            # Check if glasirTimetable is available
+            has_js_integration = await page.evaluate("typeof window.glasirTimetable === 'object'")
+            
+            if has_js_integration:
+                # Use the JS integration function
+                return await js_get_student_id(page)
+        except Exception as e:
+            logger.debug(f"JS integration for student ID extraction not available: {e}")
+            # Continue with fallback methods
+        
+        # Direct extraction methods if JS integration is not available
+        
+        # Try to extract from localStorage first
+        try:
+            local_storage = await page.evaluate("localStorage.getItem('StudentId')")
+            if local_storage:
+                return local_storage.strip()
+        except Exception:
+            pass
+            
+        # Try to find it in inputs or data attributes
+        student_id = await page.evaluate("""() => {
+            // Check if it's in a hidden input
+            const hiddenInput = document.querySelector('input[name="StudentId"]');
+            if (hiddenInput && hiddenInput.value) return hiddenInput.value;
+            
+            // Check if there's a data attribute with student ID
+            const elemWithData = document.querySelector('[data-student-id]');
+            if (elemWithData) return elemWithData.getAttribute('data-student-id');
+            
+            return null;
+        }""")
+        
+        if student_id:
+            return student_id.strip()
+            
+        # Try to find it in script tags or function calls
+        content = await page.content()
+        
+        # Look for MyUpdate function call with student ID
+        match = re.search(r"MyUpdate\s*\(\s*['\"](\d+)['\"].*?,.*?['\"]([a-zA-Z0-9-]+)['\"]", content)
+        if match:
+            return match.group(2).strip()
+            
+        # Look for a GUID pattern anywhere in the page
+        guid_pattern = r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}"
+        match = re.search(guid_pattern, content)
+        if match:
+            return match.group(0).strip()
+            
+        logger.warning("Could not extract student ID from page using any method")
+        return None
+            
+    except Exception as e:
+        logger.error(f"Error extracting student ID: {e}")
+        return None 

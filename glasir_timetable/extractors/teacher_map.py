@@ -7,11 +7,151 @@ import os
 import json
 import re
 import logging
+from typing import Dict, Optional
+from bs4 import BeautifulSoup, Tag
 
-# Add import for the API-based approach
-from glasir_timetable.api_client import fetch_teacher_mapping
+# Remove the problematic import that causes circular dependency
+# from glasir_timetable.api_client import fetch_teacher_mapping
+from ..utils.error_utils import handle_errors, GlasirScrapingError
+from ..constants import TEACHER_CACHE_FILE
 
 logger = logging.getLogger(__name__)
+
+# --- Caching logic ---
+@handle_errors(default_return={}, error_category="loading_teacher_cache")
+def load_teacher_cache(cache_file: str = TEACHER_CACHE_FILE) -> Dict[str, str]:
+    """Loads the teacher map from the JSON cache file."""
+    try:
+        with open(cache_file, "r", encoding="utf-8") as f:
+            cache_data = json.load(f)
+            if isinstance(cache_data, dict):
+                logger.info(f"Loaded {len(cache_data)} teachers from cache: {cache_file}")
+                return cache_data
+            else:
+                logger.warning(f"Invalid data format in teacher cache file: {cache_file}. Expected a dict.")
+                return {}
+    except FileNotFoundError:
+        logger.info(f"Teacher cache file not found: {cache_file}")
+        return {}
+    except json.JSONDecodeError:
+        logger.error(f"Error decoding JSON from teacher cache file: {cache_file}")
+        return {} # Return empty dict on decode error
+
+@handle_errors(error_category="saving_teacher_cache")
+def save_teacher_cache(teacher_map: Dict[str, str], cache_file: str = TEACHER_CACHE_FILE) -> None:
+    """Saves the teacher map to the JSON cache file."""
+    if not teacher_map:
+        logger.warning("Attempted to save an empty teacher map to cache. Skipping.")
+        return
+    try:
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(teacher_map, f, ensure_ascii=False, indent=4)
+        logger.info(f"Saved {len(teacher_map)} teachers to cache: {cache_file}")
+    except IOError as e:
+        logger.error(f"Failed to write teacher cache file {cache_file}: {e}")
+        # Decide if this should raise an error or just log
+    except TypeError as e:
+         logger.error(f"Data type error saving teacher cache {cache_file}: {e}")
+
+
+# --- Parsing logic moved from api_client.py ---
+@handle_errors(default_return={}, error_category="parsing_teacher_map_html")
+def parse_teacher_map_html_response(html_content: str) -> Dict[str, str]:
+    """
+    Parses the HTML response from the laerer.asp endpoint to extract the teacher map.
+
+    Args:
+        html_content: The HTML content string from the teacher map endpoint.
+
+    Returns:
+        A dictionary mapping teacher initials to full names. Returns {} on failure or if no teachers found.
+    """
+    if not html_content:
+        logger.warning("Received empty content for teacher map parsing.")
+        return {}
+
+    soup = BeautifulSoup(html_content, "lxml")
+    teacher_map = {}
+
+    # Find the select element containing teacher options
+    # Adjust selector if the ID or structure changes
+    select_element = soup.find("select") # Assuming there's only one relevant select
+    if not select_element:
+        # Try finding by a known name attribute if ID is unreliable
+        select_element = soup.find("select", {"name": "laerer"}) # Example name
+        if not select_element:
+            logger.error("Could not find the select element containing teacher options in HTML.")
+            raise GlasirScrapingError("Teacher select element not found in HTML response.")
+
+
+    options = select_element.find_all("option")
+    if not options:
+        logger.warning("No teacher <option> tags found within the select element.")
+        return {} # No teachers listed
+
+    for option in options:
+        if isinstance(option, Tag):
+            initials = option.get("value")
+            full_name = option.get_text(strip=True)
+
+            # Basic validation and cleanup
+            if initials and full_name and initials != "-1": # Skip placeholder values
+                 # Sometimes the name might contain the initials e.g., "ABC - Anders B. Christensen"
+                 # Attempt to clean this up
+                 if f"{initials} -" in full_name:
+                     cleaned_name = full_name.split(f"{initials} -", 1)[-1].strip()
+                     if cleaned_name: # Use cleaned name only if it's not empty
+                         full_name = cleaned_name
+                     else: # If cleaning results in empty, keep original (edge case)
+                          logger.debug(f"Cleaning resulted in empty name for initials {initials}, keeping original: {full_name}")
+
+                 # Further cleanup: Remove potential "(initials)" suffix if present
+                 if full_name.endswith(f"({initials})"):
+                     full_name = full_name[:-len(f"({initials})")].strip()
+
+                 if initials in teacher_map and teacher_map[initials] != full_name:
+                      logger.warning(f"Duplicate teacher initials '{initials}' found with different names: '{teacher_map[initials]}' vs '{full_name}'. Keeping the latter.")
+                 teacher_map[initials] = full_name
+
+    if not teacher_map:
+         logger.warning("Parsed teacher map HTML but extracted no valid teacher entries.")
+    else:
+         logger.debug(f"Successfully parsed {len(teacher_map)} teachers from HTML.")
+
+    return teacher_map
+
+
+# --- Function using Playwright Page (kept for potential Playwright-based extraction) ---
+# This function might still be called by PlaywrightExtractionService if API fails or is not used.
+@handle_errors(default_return={}, error_category="extracting_teacher_map_via_playwright")
+async def extract_teacher_map_with_playwright(page) -> Dict[str, str]:
+    """
+    Extracts the teacher map by parsing options from a select element using Playwright.
+    """
+    logger.info("Extracting teacher map using Playwright page content...")
+    try:
+        # Ensure the relevant selector is present
+        # Use a robust selector, wait if necessary
+        select_selector = 'select[name="laerer"], select#laerer' # Example: try name or id
+        await page.wait_for_selector(select_selector, timeout=5000)
+
+        # Get the HTML content of the select element or the whole page
+        # Getting the whole page content might be simpler if parsing logic handles it
+        content = await page.content()
+        teacher_map = parse_teacher_map_html_response(content) # Reuse parsing logic
+
+        if not teacher_map:
+            logger.warning("Extracted teacher map via Playwright, but no entries were found.")
+        else:
+            logger.info(f"Successfully extracted {len(teacher_map)} teachers via Playwright.")
+
+        return teacher_map
+
+    except Exception as e:
+        logger.error(f"Playwright error extracting teacher map: {e}")
+        # Consider if this should return {} or raise a specific error
+        # Returning {} aligns with other error handling for this function
+        return {}
 
 async def extract_teacher_map(page, use_cache=False, cache_path=None, use_api=False, cookies=None, lname_value=None, timer_value=None):
     """
@@ -51,23 +191,11 @@ async def extract_teacher_map(page, use_cache=False, cache_path=None, use_api=Fa
     # If API approach is requested, use that instead of navigation
     if use_api and cookies is not None:
         logger.info("Using API approach to extract teacher mapping...")
-        teacher_map = await fetch_teacher_mapping(cookies, lname_value, timer_value)
-        
-        if not teacher_map or len(teacher_map) < 20:  # If API approach failed or returned too few results
-            logger.warning("API approach failed, falling back to page navigation")
-        else:
-            logger.info(f"Successfully extracted {len(teacher_map)} teachers using API approach")
-            
-            # Save to cache if extraction was successful
-            if cache_path:
-                try:
-                    with open(cache_path, 'w', encoding='utf-8') as f:
-                        json.dump(teacher_map, f, ensure_ascii=False, indent=2)
-                    logger.info(f"Saved teacher mapping to cache at {cache_path}")
-                except Exception as e:
-                    logger.warning(f"Error saving teacher cache: {e}")
-            
-            return teacher_map
+        # Instead of directly calling fetch_teacher_mapping, use the new ApiClient approach
+        # This will need to be updated when ApiClient is integrated in the service layer
+        # For now, just log that API approach isn't available after refactoring
+        logger.warning("API approach for teacher mapping temporarily disabled due to refactoring")
+        # Fallback to the Playwright method
     
     # Otherwise continue with the original approach
     original_url = await navigate_to_teachers_page(page)

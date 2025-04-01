@@ -38,6 +38,10 @@ class AuthenticationError(GlasirError):
     """Exception raised for authentication errors."""
     pass
 
+class GlasirScrapingError(ExtractionError):
+    """Exception raised for scraping and data extraction errors."""
+    pass
+
 # Global state management for console listener
 _console_listener_registry = {
     'attached_pages': set(),

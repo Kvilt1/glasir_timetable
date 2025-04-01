@@ -633,8 +633,8 @@ async def export_all_weeks_api(
         dict: Summary of processing results
     """
     from glasir_timetable.navigation import navigate_and_extract_api, process_single_week_api
-    from glasir_timetable.js_navigation.js_integration import get_all_weeks_api, get_student_id
-    from glasir_timetable.api_client import extract_lname_from_page, extract_timer_value_from_page
+    from glasir_timetable.js_navigation.js_integration import get_student_id
+    from glasir_timetable.api_client import extract_lname_from_page, extract_timer_value_from_page, fetch_weeks_data
     
     # Create result summary dictionary
     results = {
@@ -665,21 +665,98 @@ async def export_all_weeks_api(
         logger.error(f"Failed to extract required values: {str(e)}")
         return results
     
-    # Get all available weeks using API-based approach
+    # First, try to get all weeks using the API
     try:
-        all_weeks = await get_all_weeks_api(
-            page=page,
+        logger.info("Attempting to get all weeks using API...")
+        all_weeks = []
+        
+        # First, get weeks from the current view/academic year
+        current_weeks_data = await fetch_weeks_data(
             cookies=api_cookies,
             student_id=student_id,
             lname_value=lname_value,
             timer_value=timer_value
         )
         
+        if current_weeks_data and "weeks" in current_weeks_data:
+            all_weeks.extend(current_weeks_data["weeks"])
+            logger.info(f"Found {len(current_weeks_data['weeks'])} weeks from current view")
+        
+        # If we need more comprehensive coverage, we need to navigate through different academic years
+        # This is a workaround since the API doesn't provide a direct way to get all weeks across all years
+        
+        # First, try to discover additional years by navigating to different pivot points
+        # These offset values often correspond to the first week of different academic years
+        year_pivot_offsets = [-53, -105, -157, -209, -261]  # Approximations for different academic years
+        
+        for pivot in year_pivot_offsets:
+            try:
+                logger.info(f"Fetching weeks at year pivot offset {pivot}...")
+                pivot_weeks_data = await fetch_weeks_data(
+                    cookies=api_cookies,
+                    student_id=student_id,
+                    lname_value=lname_value,
+                    timer_value=timer_value,
+                    v_override=str(pivot)  # Use specific offset as year pivot
+                )
+                
+                if pivot_weeks_data and "weeks" in pivot_weeks_data:
+                    new_weeks = pivot_weeks_data["weeks"]
+                    logger.info(f"Found {len(new_weeks)} weeks at pivot {pivot}")
+                    
+                    # Add only weeks we haven't seen before
+                    for week in new_weeks:
+                        if week not in all_weeks and "offset" in week:
+                            all_weeks.append(week)
+            except Exception as e:
+                logger.warning(f"Error fetching weeks at pivot {pivot}: {e}")
+        
+        # As a fallback, if we're still not getting enough weeks, try using the JS integration
+        if len(all_weeks) < 50:  # If we found suspiciously few weeks
+            logger.info("Attempting to use JavaScript to discover all available weeks...")
+            try:
+                # Try to get comprehensive list of weeks using JavaScript
+                js_weeks = await page.evaluate("""
+                () => {
+                    if (window.glasirTimetable && typeof window.glasirTimetable.getAllWeeks === 'function') {
+                        return window.glasirTimetable.getAllWeeks();
+                    }
+                    return null;
+                }
+                """)
+                
+                if js_weeks:
+                    logger.info(f"Found {len(js_weeks)} weeks using JavaScript")
+                    
+                    # Convert JS format to API format
+                    for js_week in js_weeks:
+                        if "v" in js_week:  # JavaScript version uses 'v' for offset
+                            api_week = {
+                                "offset": js_week["v"],
+                                "week_number": js_week.get("weekNum", "")
+                            }
+                            # Add if we don't already have this offset
+                            if not any(w.get("offset") == api_week["offset"] for w in all_weeks):
+                                all_weeks.append(api_week)
+            except Exception as e:
+                logger.warning(f"Error using JavaScript fallback: {e}")
+        
+        # Remove duplicates based on offset
+        seen_offsets = set()
+        unique_weeks = []
+        for week in all_weeks:
+            offset = week.get("offset")
+            if offset is not None and offset not in seen_offsets:
+                seen_offsets.add(offset)
+                unique_weeks.append(week)
+        
+        all_weeks = unique_weeks
+        
         if not all_weeks:
-            logger.error("Failed to extract all weeks using API")
+            logger.error("Failed to extract any weeks using API or fallbacks")
             return results
             
-        logger.info(f"Found {len(all_weeks)} weeks using API")
+        logger.info(f"Found total of {len(all_weeks)} unique weeks after deduplication")
     except Exception as e:
         logger.error(f"Failed to get all weeks: {str(e)}")
         return results

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Service factory for the Glasir Timetable application.
+Service factory for creating and initializing service instances.
 
-This module provides functions to create and initialize service instances,
-facilitating dependency injection and service management.
+This module provides factory functions for creating dependency-injected services
+for authentication, navigation, extraction, formatting, and storage operations.
 """
+import os
+from typing import Dict, Any, Optional, Union
+import httpx
 
-from typing import Dict, Any
-
+from glasir_timetable import add_error, logger
 from glasir_timetable.services import (
     AuthenticationService,
     NavigationService,
@@ -18,147 +20,240 @@ from glasir_timetable.services import (
     CookieAuthenticationService,
     PlaywrightNavigationService,
     PlaywrightExtractionService,
+    ApiExtractionService,
     DefaultFormattingService,
     FileStorageService
 )
+from glasir_timetable.session import AuthSessionManager
+from glasir_timetable.api_client import ApiClient
+from glasir_timetable.constants import (
+    AUTH_COOKIES_FILE,
+    DATA_DIR
+)
 
-# Cache for singleton service instances
-_services_cache = {}
-
-# Default configuration options
+# Configuration options
 _config = {
-    "use_cookie_auth": True,
-    "cookie_path": "cookies.json",
-    "auto_refresh_cookies": True
+    "use_cookie_auth": False,  # Use cookie-based authentication
+    "use_api_client": True,    # Use the API client for extraction services
+    "storage_dir": DATA_DIR,   # Default storage directory
+    "cookie_file": AUTH_COOKIES_FILE  # Default cookie file path
 }
 
-def set_config(config_dict):
+# Cache for singleton service instances
+_service_cache = {}
+
+def set_config(key: str, value: Any) -> None:
     """
-    Set configuration options for the service factory.
+    Set a configuration option for the service factory.
     
     Args:
-        config_dict: Dictionary of configuration options
+        key: Configuration key to set
+        value: Value for the configuration key
     """
     global _config
-    _config.update(config_dict)
+    if key in _config:
+        _config[key] = value
+        logger.info(f"Configuration updated: {key}={value}")
+        
+        # Clear cache when configuration changes to force recreation
+        clear_service_cache()
+    else:
+        logger.warning(f"Ignoring unknown configuration option: {key}")
+
+def create_httpx_client() -> httpx.AsyncClient:
+    """
+    Create an AsyncClient for HTTP requests.
+    
+    Returns:
+        httpx.AsyncClient: The configured client
+    """
+    return httpx.AsyncClient(
+        timeout=60.0,
+        follow_redirects=True,
+        verify=True
+    )
+
+def create_auth_session_manager(authentication_service: AuthenticationService) -> AuthSessionManager:
+    """
+    Create and configure the AuthSessionManager with the provided authentication service.
+    
+    Args:
+        authentication_service: The authentication service to use
+        
+    Returns:
+        AuthSessionManager: The configured auth session manager
+    """
+    return AuthSessionManager(authentication_service)
+
+def create_api_client(auth_session_manager: AuthSessionManager) -> ApiClient:
+    """
+    Create and configure the ApiClient with the auth session manager.
+    
+    Args:
+        auth_session_manager: The authentication session manager
+        
+    Returns:
+        ApiClient: The configured API client
+    """
+    client = create_httpx_client()
+    return ApiClient(client, auth_session_manager)
 
 def create_authentication_service() -> AuthenticationService:
     """
-    Create and return an authentication service instance.
+    Create and configure the appropriate authentication service.
     
     Returns:
-        AuthenticationService: The authentication service
+        AuthenticationService: The configured authentication service
     """
-    if "auth_service" not in _services_cache:
-        if _config.get("use_cookie_auth", True):
-            _services_cache["auth_service"] = CookieAuthenticationService(
-                cookie_path=_config.get("cookie_path", "cookies.json"),
-                auto_refresh=_config.get("auto_refresh_cookies", True)
-            )
-        else:
-            _services_cache["auth_service"] = PlaywrightAuthenticationService()
-    return _services_cache["auth_service"]
+    # Use cookie-based auth if configured
+    if _config.get("use_cookie_auth", False):
+        cookie_file = _config.get("cookie_file", AUTH_COOKIES_FILE)
+        logger.info(f"Using cookie-based authentication with file: {cookie_file}")
+        return CookieAuthenticationService(cookie_file)
+    
+    # Default to Playwright-based authentication
+    logger.info("Using Playwright-based authentication")
+    return PlaywrightAuthenticationService()
 
 def create_navigation_service() -> NavigationService:
     """
-    Create and return a navigation service instance.
+    Create and configure the navigation service.
     
     Returns:
-        NavigationService: The navigation service
+        NavigationService: The configured navigation service
     """
-    if "navigation_service" not in _services_cache:
-        _services_cache["navigation_service"] = PlaywrightNavigationService()
-    return _services_cache["navigation_service"]
+    logger.info("Creating Playwright-based navigation service")
+    return PlaywrightNavigationService()
 
-def create_extraction_service() -> ExtractionService:
+def create_extraction_service(api_client: Optional[ApiClient] = None) -> ExtractionService:
     """
-    Create and return an extraction service instance.
+    Create and configure the extraction service.
     
+    Args:
+        api_client: Optional ApiClient for API-based extraction (if use_api_client is True)
+        
     Returns:
-        ExtractionService: The extraction service
+        ExtractionService: The configured extraction service
     """
-    if "extraction_service" not in _services_cache:
-        _services_cache["extraction_service"] = PlaywrightExtractionService()
-    return _services_cache["extraction_service"]
+    # Use the API extraction service if configured and API client provided
+    if _config.get("use_api_client", True) and api_client:
+        logger.info("Using API-based extraction service")
+        return ApiExtractionService(api_client)
+    
+    # Default to Playwright-based extraction
+    logger.info("Using Playwright-based extraction service")
+    return PlaywrightExtractionService()
 
 def create_formatting_service() -> FormattingService:
     """
-    Create and return a formatting service instance.
+    Create and configure the formatting service.
     
     Returns:
-        FormattingService: The formatting service
+        FormattingService: The configured formatting service
     """
-    if "formatting_service" not in _services_cache:
-        _services_cache["formatting_service"] = DefaultFormattingService()
-    return _services_cache["formatting_service"]
+    logger.info("Creating JSON formatting service")
+    return DefaultFormattingService()
 
 def create_storage_service() -> StorageService:
     """
-    Create and return a storage service instance.
+    Create and configure the storage service.
     
     Returns:
-        StorageService: The storage service
+        StorageService: The configured storage service
     """
-    if "storage_service" not in _services_cache:
-        _services_cache["storage_service"] = FileStorageService()
-    return _services_cache["storage_service"]
+    storage_dir = _config.get("storage_dir", DATA_DIR)
+    logger.info(f"Creating file system storage service with directory: {storage_dir}")
+    return FileStorageService(storage_dir)
 
-def create_services(config=None) -> Dict[str, Any]:
+def create_services() -> Dict[str, Any]:
     """
-    Create and return all application services.
+    Create all required services and return them in a dictionary.
     
-    Args:
-        config: Optional configuration dictionary
-        
     Returns:
-        dict: Dictionary of all service instances
+        Dict[str, Any]: Dictionary of service instances
     """
-    # Update config if provided
-    if config:
-        set_config(config)
+    # Create services in correct dependency order
+    auth_service = get_service("auth", create_authentication_service)
     
+    # Create auth session manager
+    auth_session_manager = get_service("auth_session_manager", 
+                                       lambda: create_auth_session_manager(auth_service))
+    
+    # Create API client if enabled
+    api_client = None
+    if _config.get("use_api_client", True):
+        api_client = get_service("api_client", 
+                                 lambda: create_api_client(auth_session_manager))
+    
+    # Create other services
+    nav_service = get_service("nav", create_navigation_service)
+    extraction_service = get_service("extraction", 
+                                    lambda: create_extraction_service(api_client))
+    formatting_service = get_service("formatting", create_formatting_service)
+    storage_service = get_service("storage", create_storage_service)
+    
+    # Return all services in a dictionary
     return {
-        "auth_service": create_authentication_service(),
-        "navigation_service": create_navigation_service(),
-        "extraction_service": create_extraction_service(),
-        "formatting_service": create_formatting_service(),
-        "storage_service": create_storage_service()
+        "auth": auth_service,
+        "navigation": nav_service,
+        "extraction": extraction_service,
+        "formatting": formatting_service,
+        "storage": storage_service,
+        "auth_session_manager": auth_session_manager,
+        "api_client": api_client
     }
 
-def get_service(service_name: str) -> Any:
+def get_service(service_key: str, factory_func: callable) -> Any:
     """
-    Get a service instance by name.
+    Get or create a service instance from the cache.
     
     Args:
-        service_name: Name of the service to get
+        service_key: The key to identify the service
+        factory_func: Factory function to create the service if not cached
         
     Returns:
-        Any: The requested service instance
-        
-    Raises:
-        ValueError: If the service name is invalid
+        Any: The service instance
     """
-    # Create services if not already created
-    if not _services_cache:
-        create_services()
-        
-    if service_name == "auth_service":
-        return create_authentication_service()
-    elif service_name == "navigation_service":
-        return create_navigation_service()
-    elif service_name == "extraction_service":
-        return create_extraction_service()
-    elif service_name == "formatting_service":
-        return create_formatting_service()
-    elif service_name == "storage_service":
-        return create_storage_service()
-    else:
-        raise ValueError(f"Invalid service name: {service_name}")
+    global _service_cache
+    
+    # Return cached service if available
+    if service_key in _service_cache:
+        return _service_cache[service_key]
+    
+    # Create new service instance
+    service = factory_func()
+    
+    # Cache the service
+    _service_cache[service_key] = service
+    
+    return service
 
 def clear_service_cache() -> None:
     """
-    Clear the service cache.
-    This is useful for testing or when services need to be re-initialized.
+    Clear the service cache to force new instances on next request.
     """
-    global _services_cache
-    _services_cache = {} 
+    global _service_cache
+    
+    # Close any services that require cleanup
+    close_services()
+    
+    # Clear the cache
+    _service_cache = {}
+    logger.info("Service cache cleared")
+
+def close_services() -> None:
+    """
+    Close any services that require cleanup (like httpx clients).
+    """
+    global _service_cache
+    
+    # Close the httpx client in the API client if it exists
+    if "api_client" in _service_cache:
+        api_client = _service_cache["api_client"]
+        if api_client and hasattr(api_client, "_client"):
+            try:
+                # We need to run the close method in an event loop, but we can't block here
+                # Just log that it needs to be closed properly
+                logger.info("Note: API client's httpx client needs to be closed properly at shutdown")
+            except Exception as e:
+                logger.error(f"Error closing API client: {e}") 

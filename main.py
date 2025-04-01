@@ -86,7 +86,7 @@ from glasir_timetable.models import TimetableData
 from glasir_timetable.utils.model_adapters import timetable_data_to_dict
 
 # Import service factory for dependency injection
-from glasir_timetable.service_factory import create_services, get_service
+from glasir_timetable.service_factory import set_config, create_services
 
 from glasir_timetable.api_client import (
     fetch_homework_for_lessons,
@@ -250,15 +250,22 @@ async def main():
             )
             
             # Get service instances from service factory with cookie configuration
-            service_config = {
-                "use_cookie_auth": args.use_cookies,
-                "cookie_path": args.cookie_path,
-                "auto_refresh_cookies": args.refresh_cookies
-            }
-            services = create_services(config=service_config)
-            auth_service = services["auth_service"]
-            navigation_service = services["navigation_service"]
-            extraction_service = services["extraction_service"]
+            set_config("use_cookie_auth", args.use_cookies)
+            set_config("cookie_file", args.cookie_path)
+            set_config("use_api_client", args.use_api)
+            
+            # Create all services
+            services = create_services()
+            
+            # Get specific services
+            auth_service = services["auth"]
+            navigation_service = services["navigation"]
+            extraction_service = services["extraction"] 
+            api_client = services.get("api_client")
+            
+            # Log what services we're using
+            logger.info(f"Using API client: {args.use_api}")
+            logger.info(f"Using cookie authentication: {args.use_cookies}")
             
             async with error_screenshot_context(page, "main", "general_errors", take_screenshot=args.enable_screenshots):
                 # Let the auth_service handle authentication (it will use cookies if configured)
@@ -272,15 +279,14 @@ async def main():
                     logger.error("Authentication failed. Please check your credentials.")
                     return
                 
-                # Get API cookies from auth_service if it's a CookieAuthenticationService
+                # Get API cookies if needed for older API methods not using the ApiClient
                 api_cookies = {}
-                if hasattr(auth_service, "get_requests_session") and auth_service.get_requests_session():
+                if hasattr(auth_service, "get_requests_session") and callable(getattr(auth_service, "get_requests_session")):
                     # We have a requests session with cookies
                     logger.info("Using cookies from cookie authentication service")
-                    # If needed, get cookies from the session
-                    if hasattr(auth_service, "cookie_data") and auth_service.cookie_data:
-                        api_cookies = {cookie['name']: cookie['value'] 
-                                     for cookie in auth_service.cookie_data['cookies']}
+                    session = auth_service.get_requests_session()
+                    if session:
+                        api_cookies = dict(session.cookies)
                 else:
                     # Fall back to extracting cookies from the browser
                     browser_cookies = await page.context.cookies()
@@ -305,8 +311,25 @@ async def main():
                     student_id = await navigation_service.get_student_id(page)
                     logger.info(f"Found student ID: {student_id}")
                 
+                # Extract dynamic values for API if we're using the API approach
+                lname_value = None
+                timer_value = None
+                if args.use_api:
+                    logger.info("Extracting dynamic values for API requests...")
+                    lname_value = await extract_lname_from_page(page)
+                    timer_value = await extract_timer_value_from_page(page)
+                    logger.info(f"Extracted lname_value: {lname_value}")
+                    logger.info(f"Extracted timer_value: {timer_value}")
+                
                 # Extract dynamic teacher mapping using the extraction service
-                teacher_map = await extraction_service.extract_teacher_map(page, force_update=args.teacherupdate)
+                teacher_map = await extraction_service.extract_teacher_map(
+                    page, 
+                    force_update=args.teacherupdate,
+                    use_api=args.use_api,
+                    cookies=api_cookies if args.use_api else None,
+                    lname_value=lname_value,
+                    timer_value=timer_value
+                )
                 
                 # If we're only updating the teacher cache, we can exit now
                 if args.teacherupdate and args.skip_timetable:
@@ -356,10 +379,6 @@ async def main():
                         if args.use_api:
                             # Use API-based approach for current week
                             logger.info("Using API-based implementation for current week extraction")
-                            
-                            # Extract dynamic values for API
-                            lname_value = await extract_lname_from_page(page)
-                            timer_value = await extract_timer_value_from_page(page)
                             
                             # Extract current week's data with API approach
                             timetable_data, week_info, _ = await navigate_and_extract_api(
