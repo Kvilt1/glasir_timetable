@@ -1,142 +1,93 @@
-# Glasir Timetable Extractor
+# Glasir Timetable Site Mapper
 
-This application extracts timetable data from the Glasir website and saves it in JSON format for use in calendar applications.
+A comprehensive site mapping tool for the Glasir timetable website. This script authenticates with the site using cookies and captures:
 
-## Features
+- All HTML pages and their content
+- CSS stylesheets
+- JavaScript files 
+- Network requests and responses
+- Site structure and navigation
+- Timetable data across all available weeks
+- Homework content for all classes
+- Teacher information
 
-- Extracts class information including subjects, teachers, rooms, times, and homework
-- Parallel homework extraction for improved performance
-- Supports multiple weeks extraction
-- Standardized JSON format compatible with calendar applications
-- Interactive credential prompting when no saved credentials are found
-- Automatic domain handling for Glasir usernames
+## Prerequisites
+
+- Python 3.7+
+- Playwright
+- httpx
+- The Glasir timetable package (for cookie authentication)
 
 ## Installation
 
-### Quick Start
-
-```bash
-git clone https://github.com/yourusername/glasir_timetable.git
-cd glasir_timetable
-pip3 install -r requirements.txt
-python3 -m playwright install
-```
-
-### Advanced Installation Options
-
-This project supports multiple dependency management options:
-
-1. **Standard Method (pip)**: Uses `requirements.txt`
-2. **Poetry (Recommended)**: Better dependency resolution via `pyproject.toml`
-3. **PDM**: Modern Python package manager via `pdm.toml`
-
-For detailed installation instructions, troubleshooting guide, and advanced options, see [INSTALLATION.md](INSTALLATION.md).
-
-### Dependencies
-
-- **Required**: playwright, beautifulsoup4, tqdm, requests, lxml, pydantic
-- **Optional**: python-dotenv
-- **Development**: pytest, pytest-asyncio, black, isort, mypy (Poetry/PDM only)
+1. Make sure you have Python 3.7+ installed
+2. Install the required packages:
+   ```
+   pip3 install playwright httpx
+   playwright install
+   ```
+3. Ensure you have valid cookies in the cookies.json file (use the cookie_auth.py module to refresh them if needed)
 
 ## Usage
 
-### Basic Usage
+Run the script with the following command:
 
 ```bash
-python3 glasir_timetable/main.py
+python3 site_mapper.py
 ```
 
-On first run, you'll be prompted to enter your Glasir username and password. These credentials will be saved for future use.
+### Command-line options:
 
-### Command-line Arguments
+- `-o`, `--output-dir`: Directory where mapping output will be saved (default: "site_map_output")
+- `-c`, `--cookie-path`: Path to the cookies.json file (default: "./glasir_timetable/cookies.json")
+- `-d`, `--depth`: Maximum crawl depth for site exploration (default: 2)
+- `-w`, `--weeks`: Number of weeks to navigate forward and backward (default: 5)
+
+Example with all options:
 
 ```bash
-python3 glasir_timetable/main.py --username your_username --password your_password
+python3 site_mapper.py --output-dir my_mapped_site --cookie-path /path/to/cookies.json --depth 3 --weeks 10
 ```
 
-### Options
+## Output Structure
 
-- `--username`: Your login username (without @glasir.fo)
-- `--password`: Your login password
-- `--credentials-file`: Path to JSON file with username and password (default: glasir_timetable/credentials.json)
-- `--weekforward`: Number of weeks forward to extract (default: 0)
-- `--weekbackward`: Number of weeks backward to extract (default: 0)
-- `--all-weeks`: Extract all available weeks from all academic years
-- `--output-dir`: Directory to save output files (default: glasir_timetable/weeks)
-- `--test-js`: Test the JavaScript integration before extracting data
-- `--headless`: Run in headless mode (default: true)
-- `--log-level`: Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-- `--log-file`: Log to a file instead of console
-- `--batch-size`: Number of homework items to process in parallel (default: 5)
-- `--unlimited-batch-size`: Process all homework items in a single batch for maximum performance
+The script organizes captured data into the following directory structure:
 
-## Authentication
+- `site_map_output/` (or specified output directory)
+  - `html/`: Captured HTML pages
+  - `css/`: Captured CSS files
+  - `js/`: Captured JavaScript files
+  - `images/`: Screenshots and image resources
+  - `requests/`: Other captured resources
+  - `timetable/`: Extracted timetable data
+  - `homework/`: Extracted homework content
+  - `requests_log.json`: Log of all network requests
+  - `resources.json`: Details of all captured resources
+  - `page_content.json`: Index of all captured pages
+  - `urls.json`: All discovered URLs
+  - `timetable_data.json`: Structured timetable data
+  - `homework_data.json`: Structured homework data
+  - `teacher_map.json`: Teacher information
 
-The application supports three methods of authentication:
+## Features
 
-1. **Interactive Prompt**: If no credentials are found, you'll be prompted to enter your username and password.
-2. **Command-line Arguments**: Provide credentials via `--username` and `--password` flags.
-3. **Credentials File**: A JSON file containing your username and password.
+The site mapper performs the following tasks:
 
-Your username is automatically appended with "@glasir.fo" domain during login. You only need to provide the username portion.
+1. **Authentication**: Uses cookie-based authentication to access the site
+2. **Resource Collection**: Captures all network requests, HTML, CSS, JavaScript, and images
+3. **Site Crawling**: Recursively follows links within the site's domain
+4. **Week Navigation**: Iterates through available weeks in the timetable
+5. **Homework Collection**: Captures homework details for all lessons
+6. **Teacher Map**: Extracts information from the teacher page
+7. **Storage**: Organizes collected data in a structured directory system
 
-## Advanced Features
+## Working with the Data
 
-### Parallel Homework Extraction
+After running the site mapper, you can analyze the collected data in various ways:
 
-The application uses an optimized parallel approach to extract homework data:
-
-- Processes multiple homework items simultaneously for faster extraction
-- Configurable batch size (via `--batch-size` parameter) to balance performance and server load
-- Optimized for performance with JavaScript-based extraction
-
-## Output Format
-
-The application outputs data in a standardized event-centric format that organizes data around individual events (classes), making it easier to integrate with calendar applications. This format uses camelCase property names and standardized ISO 8601 date formats.
-
-```json
-{
-  "studentInfo": {
-    "studentName": "Student Name",
-    "class": "Class"
-  },
-  "events": [
-    {
-      "title": "evf",
-      "date": "2025-03-24",
-      "day": "Monday",
-      "startTime": "10:05",
-      "endTime": "11:35",
-      "teacher": "Teacher Name",
-      "teacherShort": "TN",
-      "location": "608",
-      "timeSlot": "2",
-      "cancelled": false,
-      "description": "Homework description",
-      "year": "2024-2025",
-      "level": "A"
-    },
-    ...
-  ],
-  "weekInfo": {
-    "weekNum": 13,
-    "startDate": "2025-03-24",
-    "endDate": "2025-03-30",
-    "year": 2025
-  },
-  "formatVersion": 2
-}
-```
-
-## Integrating with Calendar Applications
-
-The event-centric format makes it easier to import timetable data into calendar applications:
-
-1. Each event in the `events` array corresponds to a calendar event
-2. Use the `date`, `startTime`, and `endTime` fields to set the event timing
-3. Use `title` for the event title, `location` for the location, and `description` for additional details
-4. Cancelled classes (where `cancelled` is true) can be handled according to your application's requirements
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details. 
+- Review the HTML content to understand the page structure
+- Analyze JavaScript files to understand the site's behavior
+- Examine network requests to identify API patterns
+- Study the timetable data structure for integration purposes
+- Explore the site navigation structure
+- Understand homework and teacher data relationships 

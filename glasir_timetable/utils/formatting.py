@@ -77,20 +77,54 @@ def normalize_week_number(week_num):
     
     return week_num
 
-def generate_week_filename(year, week_num, start_date, end_date):
+def generate_week_filename(year, week_num=None, start_date=None, end_date=None):
     """
     Generate a consistent filename for the week.
     
+    Can be called in two ways:
+    1. With individual parameters: generate_week_filename(year, week_num, start_date, end_date)
+    2. With a timetable_data dictionary: generate_week_filename(timetable_data)
+    
     Args:
-        year (int): The year
-        week_num (int): The week number
-        start_date (str): The start date
-        end_date (str): The end date
+        year: Either the year as int or a timetable_data dictionary
+        week_num: The week number (optional if year is timetable_data)
+        start_date: The start date (optional if year is timetable_data)
+        end_date: The end date (optional if year is timetable_data)
         
     Returns:
         str: Formatted filename
     """
     from glasir_timetable import logger
+    
+    # Check if first argument is a dictionary (timetable_data)
+    if isinstance(year, dict):
+        timetable_data = year
+        
+        # Extract required values from timetable_data
+        if "weekInfo" in timetable_data:
+            week_info = timetable_data["weekInfo"]
+            year = week_info.get("year")
+            week_num = week_info.get("weekNumber")
+            start_date = week_info.get("startDate")
+            end_date = week_info.get("endDate")
+        else:
+            # Handle cases where the structure is different
+            logger.warning("Expected 'weekInfo' key not found in timetable_data")
+            
+            # Try to use week_info if it's directly available
+            if hasattr(timetable_data, 'week_info'):
+                # This might be a Pydantic model like TimetableData
+                week_info = timetable_data.week_info
+                year = getattr(week_info, 'year', None)
+                week_num = getattr(week_info, 'week_number', None)
+                start_date = getattr(week_info, 'start_date', None)
+                end_date = getattr(week_info, 'end_date', None)
+            else:
+                # Try common key patterns
+                year = timetable_data.get("year")
+                week_num = timetable_data.get("week_num") or timetable_data.get("weekNum")
+                start_date = timetable_data.get("start_date") or timetable_data.get("startDate")
+                end_date = timetable_data.get("end_date") or timetable_data.get("endDate")
     
     # For weeks that span across two years (like Week 1), prioritize the end date year
     # This aligns with the requirement that cross-year weeks should be filed under the second year
@@ -140,12 +174,12 @@ def generate_week_filename(year, week_num, start_date, end_date):
         
         # Special rule for week number 1 spanning two years:
         # Always assign it to the second year (even if end date is still in the first year)
-        if int(week_num) == 1 and start_year and end_year and start_year != end_year:
+        if week_num and int(week_num) == 1 and start_year and end_year and start_year != end_year:
             logger.debug(f"Week 1 spanning years: start_year={start_year}, end_year={end_year}, using end_year")
             return f"{end_year} Vika {week_num} - {start_date}-{end_date}.json"
         
         # If week 1 spans years and we have a complex date format
-        if int(week_num) == 1 and start_date and "12" in start_date and end_date and "01" in end_date:
+        if week_num and int(week_num) == 1 and start_date and "12" in start_date and end_date and "01" in end_date:
             # Check for December in start date and January in end date
             logger.debug(f"Week 1 appears to span years (Dec-Jan), using second year: {year+1}")
             return f"{year+1} Vika {week_num} - {start_date}-{end_date}.json"

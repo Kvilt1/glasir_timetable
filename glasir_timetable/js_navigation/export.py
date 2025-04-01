@@ -28,7 +28,7 @@ from glasir_timetable.js_navigation.js_integration import (
 from glasir_timetable.extractors.timetable import extract_timetable_data
 from glasir_timetable.extractors.homework_parser import parse_homework_html_response
 from glasir_timetable.api_client import fetch_homework_for_lessons
-from glasir_timetable.navigation import with_week_navigation, navigate_and_extract, navigate_and_extract_api
+from glasir_timetable.navigation import with_week_navigation, navigate_and_extract
 
 async def export_all_weeks(
     page, 
@@ -613,29 +613,29 @@ async def export_all_weeks_api(
     page, 
     output_dir, 
     teacher_map, 
-    student_id=None,
-    api_cookies=None,
-    concurrent_homework=True,
-    max_concurrent_homework=5
+    api_cookies,
+    navigation_service=None
 ):
     """
-    Export all available timetable weeks to JSON files using direct API calls instead of JavaScript navigation.
+    Export all available timetable weeks to JSON files using API-based approach.
     
-    This function is an alternative to export_all_weeks that uses the API-based approach.
-    It uses the same parameters and returns the same structure for compatibility.
+    This implementation uses API calls to fetch data without navigating the page,
+    which preserves the lname value throughout the process.
     
     Args:
         page: Playwright page object
         output_dir: Directory to save output files
         teacher_map: Dictionary mapping teacher initials to full names
-        student_id: Student ID for JavaScript navigation (optional)
         api_cookies: Cookies for API requests
-        concurrent_homework: Whether to process homework concurrently with week navigation
-        max_concurrent_homework: Maximum number of concurrent homework requests
-    
+        navigation_service: Optional navigation service for additional functionality
+        
     Returns:
         dict: Summary of processing results
     """
+    from glasir_timetable.navigation import navigate_and_extract_api, process_single_week_api
+    from glasir_timetable.js_navigation.js_integration import get_all_weeks_api, get_student_id
+    from glasir_timetable.api_client import extract_lname_from_page, extract_timer_value_from_page
+    
     # Create result summary dictionary
     results = {
         "total_weeks": 0,
@@ -647,62 +647,39 @@ async def export_all_weeks_api(
     # Keep track of processed weeks using v_value which is unique across all weeks
     processed_v_values = set()
     
-    # Get student ID if not provided
-    if not student_id:
-        try:
-            student_id = await get_student_id(page)
-            logger.info(f"Found student ID: {student_id}")
-        except JavaScriptIntegrationError as e:
-            logger.error(f"Failed to get student ID: {str(e)}")
-            return results
-    
-    # Get all available weeks - still need to use JavaScript for this initially
+    # Extract required values for API calls
     try:
-        # First check if the glasirTimetable object exists
-        has_timetable = await page.evaluate("""
-        () => {
-            console.log("Checking for glasirTimetable object:", window.glasirTimetable);
-            return {
-                exists: typeof window.glasirTimetable === 'object',
-                functions: window.glasirTimetable ? Object.keys(window.glasirTimetable) : []
-            };
-        }
-        """)
+        # Get student ID
+        student_id = await get_student_id(page)
+        logger.info(f"Found student ID: {student_id}")
         
-        logger.info(f"glasirTimetable exists: {has_timetable['exists']}, available functions: {has_timetable['functions']}")
+        # Get lname value
+        lname_value = await extract_lname_from_page(page)
+        logger.info(f"Found lname value: {lname_value}")
         
-        if not has_timetable['exists'] or 'getAllWeeks' not in has_timetable['functions']:
-            logger.error("glasirTimetable object not initialized correctly or getAllWeeks function missing")
-            # Try re-injecting the script
-            logger.info("Attempting to re-inject the script...")
-            from glasir_timetable.js_navigation.js_integration import inject_timetable_script
-            await inject_timetable_script(page)
+        # Get timer value
+        timer_value = await extract_timer_value_from_page(page)
+        logger.info(f"Found timer value: {timer_value}")
         
-        # Use JavaScript to extract all available weeks
-        all_weeks = await page.evaluate("""
-        () => {
-            console.log("Calling getAllWeeks function");
-            try {
-                if (!window.glasirTimetable || typeof window.glasirTimetable.getAllWeeks !== 'function') {
-                    console.error("getAllWeeks function not available:", window.glasirTimetable);
-                    return null;
-                }
-                
-                const weeks = window.glasirTimetable.getAllWeeks();
-                console.log("Found weeks:", weeks ? weeks.length : 0);
-                return weeks;
-            } catch (error) {
-                console.error("Error in getAllWeeks:", error);
-                return null;
-            }
-        }
-        """)
+    except Exception as e:
+        logger.error(f"Failed to extract required values: {str(e)}")
+        return results
+    
+    # Get all available weeks using API-based approach
+    try:
+        all_weeks = await get_all_weeks_api(
+            page=page,
+            cookies=api_cookies,
+            student_id=student_id,
+            lname_value=lname_value,
+            timer_value=timer_value
+        )
         
         if not all_weeks:
-            logger.error("Failed to extract all weeks using JavaScript")
+            logger.error("Failed to extract all weeks using API")
             return results
             
-        logger.info(f"Found {len(all_weeks)} weeks using JavaScript")
+        logger.info(f"Found {len(all_weeks)} weeks using API")
     except Exception as e:
         logger.error(f"Failed to get all weeks: {str(e)}")
         return results
@@ -711,91 +688,69 @@ async def export_all_weeks_api(
     results["total_weeks"] = len(all_weeks)
     update_stats("total_weeks", len(all_weeks), increment=False)
     
-    # Sort weeks by v_value to ensure sequential processing (first year first)
-    # v_value is negative and increases toward 0, so sort in reverse
-    all_weeks.sort(key=lambda w: w.get('v', 0), reverse=True)
+    # Sort weeks by offset to ensure sequential processing
+    all_weeks.sort(key=lambda w: w.get('offset', 0))
     
-    # Process all weeks with API-based extraction
+    # Process each week sequentially
+    start_time = time.time()
     with tqdm(total=len(all_weeks), desc="Processing weeks", unit="week") as pbar:
-        start_time = time.time()
-        
-        for week_index, week in enumerate(all_weeks):
-            # Skip based on v_value
-            v_value = week.get('v')
-            if v_value is None or v_value in processed_v_values:
-                results["skipped"] += 1
-                pbar.update(1)
-                continue
-            
-            # Get week info
-            week_num = week.get('weekNum', 0)
-            academic_year = week.get('academicYear', 0)
-            
-            pbar.set_description(f"Week {week_num} (v={v_value}, year={academic_year})")
-            
+        for week in all_weeks:
             try:
-                # Extract timetable data using API-based approach
-                timetable_data, week_info, homework_lesson_ids = await navigate_and_extract_api(
-                    page, v_value, teacher_map, student_id, api_cookies, use_models=False
-                )
+                offset = week.get('offset')
+                week_num = week.get('week_number')
                 
-                # Skip if no data or no events
-                if not timetable_data or "events" not in timetable_data:
-                    pbar.update(1)
+                # Check if we've already processed this week
+                if offset in processed_v_values:
+                    logger.info(f"Week {week_num} (offset {offset}) already processed, skipping")
+                    results["skipped"] += 1
                     continue
                 
-                # Get standardized week information
-                year = week_info.get('year', datetime.now().year)
-                start_date = week_info.get('start_date')
-                end_date = week_info.get('end_date')
+                # Process this week using API-based navigation
+                week_result = await process_single_week_api(
+                    page=page,
+                    week_offset=offset,
+                    output_dir=output_dir,
+                    teacher_map=teacher_map,
+                    api_cookies=api_cookies,
+                    lname_value=lname_value,
+                    timer_value=timer_value
+                )
                 
-                # Normalize and validate dates
-                start_date, end_date = normalize_dates(start_date, end_date, year)
-                
-                # Normalize week number
-                normalized_week_num = normalize_week_number(week_num)
-                
-                # Generate filename for saving
-                filename = generate_week_filename(year, normalized_week_num, start_date, end_date)
-                output_path = os.path.join(output_dir, filename)
-                
-                # Save data to JSON file
-                save_json_data(timetable_data, output_path)
-                
-                # Mark as processed
-                processed_v_values.add(v_value)
-                results["processed_weeks"] += 1
-                update_stats("processed_weeks")
+                if week_result.get("success"):
+                    processed_v_values.add(offset)
+                    results["processed_weeks"] += 1
+                    update_stats("processed_weeks")
+                else:
+                    error_msg = week_result.get("error", "Unknown error")
+                    results["errors"].append({"week": week_num, "error": error_msg})
+                    add_error("extraction_errors", error_msg, {"offset": offset, "week_num": week_num})
                 
                 # Calculate and display statistics
                 elapsed = time.time() - start_time
                 items_per_min = 60 * results["processed_weeks"] / elapsed if elapsed > 0 else 0
                 remaining = (len(all_weeks) - pbar.n) / items_per_min * 60 if items_per_min > 0 else 0
                 
-                # Update progress bar
                 pbar.set_postfix({
-                    "success": results["processed_weeks"], 
-                    "rate": f"{items_per_min:.1f}/min"
+                    "success": results["processed_weeks"],
+                    "rate": f"{items_per_min:.1f}/min",
+                    "remaining": f"{remaining:.1f}min"
                 })
-            
+                
             except Exception as e:
                 # Handle errors
-                error_msg = f"Error processing week {week_num}: {str(e)}"
-                results["errors"].append({"week": week_num, "error": error_msg})
-                add_error("extraction_errors", error_msg, {"v_value": v_value, "week_num": week_num})
+                error_msg = f"Error processing week {week.get('week_number')}: {str(e)}"
+                results["errors"].append({"week": week.get('week_number'), "error": error_msg})
+                add_error("extraction_errors", error_msg, {"offset": week.get('offset'), "week_num": week.get('week_number')})
                 logger.error(error_msg)
                 
                 # Take a screenshot for debugging
                 try:
-                    await page.screenshot(path=f"error_week_{week_num}.png")
+                    await page.screenshot(path=f"error_week_{week.get('week_number')}.png")
                 except Exception as screenshot_error:
                     logger.error(f"Failed to take error screenshot: {str(screenshot_error)}")
             
             finally:
                 pbar.update(1)
     
-    logger.info(f"Completed API-based extraction of all weeks. Processed {results['processed_weeks']} of {results['total_weeks']} weeks.")
-    if results['errors']:
-        logger.warning(f"Encountered {len(results['errors'])} errors during extraction.")
-    
+    logger.info(f"All weeks processed. Successfully exported {results['processed_weeks']}/{results['total_weeks']} weeks.")
     return results 

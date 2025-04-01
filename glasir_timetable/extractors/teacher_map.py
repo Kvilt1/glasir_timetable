@@ -8,9 +8,12 @@ import json
 import re
 import logging
 
+# Add import for the API-based approach
+from glasir_timetable.api_client import fetch_teacher_mapping
+
 logger = logging.getLogger(__name__)
 
-async def extract_teacher_map(page, use_cache=False, cache_path=None):
+async def extract_teacher_map(page, use_cache=False, cache_path=None, use_api=False, cookies=None, lname_value=None, timer_value=None):
     """
     Extract teacher map from the timetable page.
     Returns a dictionary mapping teacher initials to full names with initials.
@@ -19,6 +22,10 @@ async def extract_teacher_map(page, use_cache=False, cache_path=None):
         page: The Playwright page object.
         use_cache: Whether to use a cached version if available.
         cache_path: Path to the cache file (default is in the same directory as this module).
+        use_api: Whether to use the API approach instead of page navigation.
+        cookies: Cookies dictionary to use with the API approach.
+        lname_value: The lname value for API requests.
+        timer_value: The timer value for API requests.
         
     Returns:
         dict: A mapping of teacher initials to full names.
@@ -41,7 +48,28 @@ async def extract_teacher_map(page, use_cache=False, cache_path=None):
     
     logger.info("Extracting teacher mapping from page...")
     
-    # Navigate to the teachers page if we're not using cache or cache loading failed
+    # If API approach is requested, use that instead of navigation
+    if use_api and cookies is not None:
+        logger.info("Using API approach to extract teacher mapping...")
+        teacher_map = await fetch_teacher_mapping(cookies, lname_value, timer_value)
+        
+        if not teacher_map or len(teacher_map) < 20:  # If API approach failed or returned too few results
+            logger.warning("API approach failed, falling back to page navigation")
+        else:
+            logger.info(f"Successfully extracted {len(teacher_map)} teachers using API approach")
+            
+            # Save to cache if extraction was successful
+            if cache_path:
+                try:
+                    with open(cache_path, 'w', encoding='utf-8') as f:
+                        json.dump(teacher_map, f, ensure_ascii=False, indent=2)
+                    logger.info(f"Saved teacher mapping to cache at {cache_path}")
+                except Exception as e:
+                    logger.warning(f"Error saving teacher cache: {e}")
+            
+            return teacher_map
+    
+    # Otherwise continue with the original approach
     original_url = await navigate_to_teachers_page(page)
     
     if original_url is None:

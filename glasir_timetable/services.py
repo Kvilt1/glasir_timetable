@@ -639,35 +639,34 @@ class PlaywrightNavigationService(NavigationService):
             return ""
 
 class PlaywrightExtractionService(ExtractionService):
-    """
-    Playwright-based implementation of the ExtractionService interface.
-    """
+    """Extracts timetable, teacher and homework data using Playwright."""
     
     async def extract_timetable(self, page: Page, teacher_map: Dict[str, str] = None) -> Union[TimetableData, Dict[str, Any]]:
         """
-        Extract timetable data from the page.
+        Extract timetable data from the current page.
         
         Args:
             page: The Playwright page object
             teacher_map: Optional dictionary mapping teacher initials to full names
             
         Returns:
-            Union[TimetableData, dict]: Extracted timetable data
+            Union[TimetableData, dict]: Extracted timetable data as model or dictionary
         """
+        from glasir_timetable.extractors.timetable import extract_timetable_data
+        
         try:
-            from glasir_timetable.extractors.timetable import extract_timetable_data
+            timetable_data, week_info, lesson_ids = await extract_timetable_data(page)
             
-            # Extract timetable data (returns a tuple with data and week_info)
-            timetable_data, _ = await extract_timetable_data(
-                page, 
-                teacher_map=teacher_map, 
-                use_models=True
-            )
+            # Add teacher names if available
+            if teacher_map and timetable_data:
+                for event in timetable_data.get('events', []):
+                    if event.get('teacher') in teacher_map:
+                        event['teacherFullName'] = teacher_map[event['teacher']]
             
             return timetable_data
         except Exception as e:
-            logger.error(f"Error extracting timetable data: {e}")
-            return None
+            add_error("timetable_extraction", f"Failed to extract timetable: {e}")
+            return {}
     
     async def extract_teacher_map(self, page: Page, force_update: bool = False) -> Dict[str, str]:
         """
@@ -680,14 +679,13 @@ class PlaywrightExtractionService(ExtractionService):
         Returns:
             dict: Mapping of teacher initials to full names
         """
+        from glasir_timetable.extractors.teacher_map import extract_teacher_map
+        
         try:
-            from glasir_timetable.extractors.teacher_map import extract_teacher_map
-            
-            # Extract teacher map
-            teacher_map = await extract_teacher_map(page, use_cache=not force_update)
+            teacher_map = await extract_teacher_map(page, force_update=force_update)
             return teacher_map
         except Exception as e:
-            logger.error(f"Error extracting teacher map: {e}")
+            add_error("teacher_map_extraction", f"Failed to extract teacher map: {e}")
             return {}
     
     async def extract_homework(self, page: Page, lesson_id: str, subject_code: str = "Unknown") -> Optional[Homework]:
@@ -702,38 +700,85 @@ class PlaywrightExtractionService(ExtractionService):
         Returns:
             Optional[Homework]: Homework data if successful, None otherwise
         """
+        from glasir_timetable.api_client import fetch_homework_for_lesson, extract_lname_from_page, extract_timer_value_from_page, fetch_homework_with_retry
+        
         try:
-            from glasir_timetable.api_client import fetch_homework_for_lesson, parse_individual_lesson_response
-            
-            # Get cookies from page for API request
+            # Get cookies for API requests
             cookies = {}
-            for cookie in await page.context.cookies():
-                cookies[cookie['name']] = cookie['value']
+            try:
+                all_cookies = await page.context.cookies()
+                cookies = {cookie['name']: cookie['value'] for cookie in all_cookies}
+            except Exception as cookie_e:
+                add_error("homework_extraction", f"Failed to get cookies: {cookie_e}, subject: {subject_code}")
+                return None
             
-            # Extract dynamic lname value if possible
-            from glasir_timetable.api_client import extract_lname_from_page
+            # Extract the lname value for the API request
             lname_value = await extract_lname_from_page(page)
+            timer_value = await extract_timer_value_from_page(page)
             
-            # Use API-based extraction
-            html_content = await fetch_homework_for_lesson(cookies, lesson_id, lname_value)
+            # Attempt to fetch the homework using our new retry function
+            # First try to get auth service for potential retry
+            auth_service = None
+            username = None
+            password = None
             
-            if html_content:
-                # Parse the content
-                homework_text = parse_individual_lesson_response(html_content)
+            try:
+                # Try to access service_factory and get credentials from the context
+                from glasir_timetable.service_factory import get_service
+                auth_service = get_service("authentication")
                 
-                if homework_text:
-                    # Create Homework object with the extracted content
-                    homework = Homework(
-                        lessonId=lesson_id,
-                        subject=subject_code,
-                        content=homework_text,
-                        date=datetime.now().strftime("%Y-%m-%d")
-                    )
-                    return homework
-                
-            return None
+                # Try to get credentials from the environment or a credentials file
+                credentials_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credentials.json")
+                if os.path.exists(credentials_path):
+                    with open(credentials_path, 'r') as f:
+                        creds = json.load(f)
+                        username = creds.get('username')
+                        password = creds.get('password')
+            except Exception as auth_e:
+                logger.warning(f"Could not get authentication service or credentials: {auth_e}")
+                # We'll still try the normal fetch even without retry capability
+            
+            # Use the retry function if we have auth capabilities, otherwise use regular function
+            if auth_service and username and password:
+                html_content = await fetch_homework_with_retry(
+                    cookies, 
+                    lesson_id, 
+                    page=page,
+                    auth_service=auth_service,
+                    username=username,
+                    password=password,
+                    lname_value=lname_value, 
+                    timer_value=timer_value
+                )
+            else:
+                html_content = await fetch_homework_for_lesson(cookies, lesson_id, lname_value, timer_value)
+            
+            if not html_content:
+                logger.warning(f"No homework content returned for lesson {lesson_id} ({subject_code})")
+                return None
+            
+            from glasir_timetable.api_client import parse_individual_lesson_response
+            homework_text = parse_individual_lesson_response(html_content)
+            
+            if not homework_text:
+                logger.info(f"No homework text found for lesson {lesson_id} ({subject_code})")
+                return None
+            
+            # Create homework object
+            homework = Homework(
+                lesson_id=lesson_id,
+                subject=subject_code,
+                content=homework_text,
+                date=datetime.now().strftime("%Y-%m-%d"),
+                extracted_at=datetime.now().isoformat()
+            )
+            
+            return homework
+            
         except Exception as e:
-            logger.error(f"Error extracting homework for {subject_code} (ID: {lesson_id}): {e}")
+            add_error("homework_extraction", f"Failed to extract homework for {subject_code} (lesson {lesson_id}): {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
     
     async def extract_multiple_homework(self, 
@@ -751,44 +796,102 @@ class PlaywrightExtractionService(ExtractionService):
         Returns:
             dict: Mapping of lesson IDs to homework data
         """
+        from glasir_timetable.api_client import (
+            fetch_homework_for_lessons, 
+            extract_lname_from_page, 
+            extract_timer_value_from_page,
+            parse_individual_lesson_response,
+            fetch_homework_for_lessons_with_retry
+        )
+        
+        results = {}
+        
+        if not lesson_ids:
+            return results
+        
         try:
-            from glasir_timetable.api_client import fetch_homework_for_lessons, extract_lname_from_page
-            
-            # Get cookies from page for API request
+            # Get cookies for API requests
             cookies = {}
-            for cookie in await page.context.cookies():
-                cookies[cookie['name']] = cookie['value']
+            try:
+                all_cookies = await page.context.cookies()
+                cookies = {cookie['name']: cookie['value'] for cookie in all_cookies}
+            except Exception as cookie_e:
+                add_error("homework_extraction", f"Failed to get cookies for batch extraction: {cookie_e}")
+                return results
             
-            # Extract dynamic lname value if possible
+            # Extract the lname value for the API request
             lname_value = await extract_lname_from_page(page)
+            timer_value = await extract_timer_value_from_page(page)
             
-            # Use API-based extraction with parallel requests
-            content_dict = await fetch_homework_for_lessons(
-                cookies=cookies,
-                lesson_ids=lesson_ids,
-                max_concurrent=batch_size,
-                lname_value=lname_value
-            )
+            # Attempt to fetch the homework content for all lesson IDs in parallel
+            # Try to get auth service for potential retry
+            auth_service = None
+            username = None
+            password = None
             
-            # Convert to Homework objects
-            result = {}
-            for lesson_id, content in content_dict.items():
-                if content:
-                    # Create Homework object
-                    homework = Homework(
-                        lessonId=lesson_id,
-                        subject="Unknown",  # We don't know the subject here
-                        content=content,
-                        date=datetime.now().strftime("%Y-%m-%d")
+            try:
+                # Try to access service_factory and get credentials from the context
+                from glasir_timetable.service_factory import get_service
+                auth_service = get_service("authentication")
+                
+                # Try to get credentials from the environment or a credentials file
+                credentials_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credentials.json")
+                if os.path.exists(credentials_path):
+                    with open(credentials_path, 'r') as f:
+                        creds = json.load(f)
+                        username = creds.get('username')
+                        password = creds.get('password')
+            except Exception as auth_e:
+                logger.warning(f"Could not get authentication service or credentials: {auth_e}")
+                # We'll still try the normal fetch even without retry capability
+            
+            # Use the retry function if we have auth capabilities, otherwise use regular function
+            if auth_service and username and password:
+                homework_map = await fetch_homework_for_lessons_with_retry(
+                    cookies, 
+                    lesson_ids, 
+                    page=page,
+                    auth_service=auth_service,
+                    username=username,
+                    password=password,
+                    max_concurrent=batch_size,
+                    lname_value=lname_value, 
+                    timer_value=timer_value
+                )
+            else:
+                homework_map = await fetch_homework_for_lessons(
+                    cookies, lesson_ids, batch_size, lname_value, timer_value
+                )
+            
+            if not homework_map:
+                logger.warning(f"No homework content returned for any of the {len(lesson_ids)} lessons")
+                return results
+            
+            # Convert the HTML responses to Homework objects
+            lesson_to_subject = {}  # We'll try to collect this from nearby elements, but it's optional
+            
+            for lesson_id, html_content in homework_map.items():
+                subject_code = lesson_to_subject.get(lesson_id, "Unknown")
+                
+                homework_text = parse_individual_lesson_response(html_content)
+                
+                if homework_text:
+                    results[lesson_id] = Homework(
+                        lesson_id=lesson_id,
+                        subject=subject_code,
+                        content=homework_text,
+                        date=datetime.now().strftime("%Y-%m-%d"),
+                        extracted_at=datetime.now().isoformat()
                     )
-                    result[lesson_id] = homework
-                else:
-                    result[lesson_id] = None
-                    
-            return result
+            
+            logger.info(f"Successfully extracted {len(results)}/{len(lesson_ids)} homework items")
+            return results
+            
         except Exception as e:
-            logger.error(f"Error extracting multiple homework: {e}")
-            return {lesson_id: None for lesson_id in lesson_ids}
+            add_error("homework_extraction_batch", f"Failed to extract homework batch: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return results
     
     async def extract_student_info(self, page: Page) -> Dict[str, str]:
         """

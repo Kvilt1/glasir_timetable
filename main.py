@@ -42,8 +42,7 @@ from glasir_timetable.extractors import (
 
 # Import JavaScript navigation functions
 from glasir_timetable.js_navigation import (
-    export_all_weeks,
-    export_all_weeks_api
+    export_all_weeks
 )
 from glasir_timetable.js_navigation.js_integration import (
     inject_timetable_script,
@@ -79,7 +78,8 @@ from glasir_timetable.navigation import (
     process_weeks,
     process_single_week,
     navigate_and_extract,
-    get_week_directions
+    get_week_directions,
+    navigate_and_extract_api
 )
 
 from glasir_timetable.models import TimetableData
@@ -87,6 +87,12 @@ from glasir_timetable.utils.model_adapters import timetable_data_to_dict
 
 # Import service factory for dependency injection
 from glasir_timetable.service_factory import create_services, get_service
+
+from glasir_timetable.api_client import (
+    fetch_homework_for_lessons,
+    extract_lname_from_page,
+    extract_timer_value_from_page
+)
 
 def generate_credentials_file(file_path, username, password):
     """
@@ -311,25 +317,18 @@ async def main():
                 if args.all_weeks:
                     logger.info("Processing all weeks from all academic years...")
                     
-                    # Choose between API-based or JS-based implementation for all weeks export
                     if args.use_api:
-                        # Import the API-based export function
-                        from glasir_timetable.js_navigation import export_all_weeks_api
+                        # Use API-based implementation for all weeks export
                         logger.info("Using API-based implementation for exporting all weeks")
-                        
-                        # Export all weeks using API-based approach
+                        from glasir_timetable.js_navigation.export import export_all_weeks_api
                         export_results = await export_all_weeks_api(
                             page=page,
                             output_dir=args.output_dir,
                             teacher_map=teacher_map,
-                            student_id=student_id,
-                            api_cookies=api_cookies,
-                            concurrent_homework=True
+                            api_cookies=api_cookies
                         )
                     else:
-                        # Export all weeks using the dedicated function with API cookies
-                        # Homework is processed using concurrent approach: homework extraction happens
-                        # independently and simultaneously with week navigation and extraction
+                        # Always use JS-based implementation for all weeks export
                         logger.info("Using JavaScript-based implementation for exporting all weeks")
                         export_results = await export_all_weeks(
                             page=page,
@@ -352,18 +351,24 @@ async def main():
                     # Extract current week's timetable data
                     logger.info("Extracting current week's timetable data...")
                     
-                    # Extract timetable data using HTML parsing
+                    # Extract timetable data using either API or JavaScript navigation
                     try:
-                        # Choose between API-based or JS-based implementation based on the use-api flag
                         if args.use_api:
-                            from glasir_timetable.navigation import navigate_and_extract_api
+                            # Use API-based approach for current week
                             logger.info("Using API-based implementation for current week extraction")
+                            
+                            # Extract dynamic values for API
+                            lname_value = await extract_lname_from_page(page)
+                            timer_value = await extract_timer_value_from_page(page)
+                            
+                            # Extract current week's data with API approach
                             timetable_data, week_info, _ = await navigate_and_extract_api(
-                                page, 0, teacher_map, student_id, api_cookies
+                                page, 0, teacher_map, api_cookies,
+                                lname_value=lname_value,
+                                timer_value=timer_value
                             )
                         else:
-                            # Extract current week's data with sequential homework extraction:
-                            # First attempts bulk API, then falls back to individual lessons if bulk API returns empty
+                            # Extract current week's data with sequential homework extraction
                             logger.info("Using JavaScript-based implementation for current week extraction")
                             timetable_data, week_info, _ = await navigate_and_extract(
                                 page, 0, teacher_map, student_id, api_cookies
@@ -426,7 +431,7 @@ async def main():
                             output_dir=args.output_dir,
                             api_cookies=api_cookies,
                             processed_weeks={week_info['week_num']} if week_info else set(),
-                            use_api=args.use_api  # Use the direct API if requested
+                            use_api=args.use_api  # Pass the use_api flag to determine which approach to use
                         )
 
             # Print summary of errors

@@ -490,6 +490,63 @@ async def get_current_week_info(page):
         
         return result
 
+async def get_all_weeks_api(page, cookies, student_id, lname_value=None, timer_value=None):
+    """
+    Get all available weeks using the API-based approach without page navigation.
+    
+    Args:
+        page: The Playwright page object.
+        cookies: Cookies dictionary for API requests.
+        student_id: Student ID extracted from the page.
+        lname_value: Optional dynamically extracted lname value.
+        timer_value: Optional timer value extracted from the page.
+        
+    Returns:
+        List of week data with offset, week number, and date range (if available).
+    """
+    try:
+        # Import here to avoid circular imports
+        from glasir_timetable.api_client import fetch_weeks_data
+        
+        if not lname_value:
+            # Import extract_lname_from_page here to avoid circular imports
+            from glasir_timetable.api_client import extract_lname_from_page
+            lname_value = await extract_lname_from_page(page)
+            
+        if not timer_value:
+            # Import extract_timer_value_from_page here to avoid circular imports
+            from glasir_timetable.api_client import extract_timer_value_from_page
+            timer_value = await extract_timer_value_from_page(page)
+            
+        # Fetch weeks data using the API client
+        weeks_data = await fetch_weeks_data(
+            cookies=cookies,
+            student_id=student_id,
+            lname_value=lname_value,
+            timer_value=timer_value
+        )
+        
+        # Format the weeks in a way that matches the existing JS function
+        formatted_weeks = []
+        for week in weeks_data.get("weeks", []):
+            formatted_week = {
+                "offset": week.get("offset"),
+                "week_number": week.get("week_number"),
+                "is_current": week.get("is_current", False)
+            }
+            
+            if week.get("date_range"):
+                formatted_week["date_range"] = week.get("date_range")
+                
+            formatted_weeks.append(formatted_week)
+            
+        return formatted_weeks
+    except Exception as e:
+        logger.error(f"Error getting all weeks via API: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return []
+
 # Export all functions that should be importable
 __all__ = [
     "JavaScriptIntegrationError",
@@ -502,5 +559,6 @@ __all__ = [
     "test_javascript_integration",
     "extract_homework_content_js",
     "extract_all_homework_content_js",
-    "get_current_week_info"
+    "get_current_week_info",
+    "get_all_weeks_api"
 ] 
