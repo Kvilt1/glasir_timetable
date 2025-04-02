@@ -474,6 +474,109 @@ async def get_current_week_info(page):
             
         return week_info
 
+async def extract_student_info_js(page):
+    """
+    Extract student information from the page using JavaScript.
+    
+    Args:
+        page: The Playwright page object
+        
+    Returns:
+        dict: Student information (name, class)
+        
+    Raises:
+        JavaScriptIntegrationError: If extraction fails
+    """
+    async with error_screenshot_context(page, "extract_student_info", "javascript_errors"):
+        # Make sure the script is injected
+        await inject_timetable_script(page)
+        
+        # Extract student info using JavaScript
+        try:
+            # First try to extract using our injected function if available
+            student_info = await evaluate_js_safely(
+                page,
+                "glasirTimetable.getStudentInfo ? glasirTimetable.getStudentInfo() : null",
+                error_message="Failed to extract student info using JavaScript integration"
+            )
+            
+            if student_info and student_info.get("studentName"):
+                logger.info(f"Extracted student info using JavaScript: {student_info}")
+                return student_info
+                
+            # If no result from glasirTimetable, try direct extraction
+            student_info = await evaluate_js_safely(
+                page,
+                """() => {
+                    // Try to find name in welcome text first
+                    const welcomeElement = document.querySelector('.welcome');
+                    if (welcomeElement) {
+                        const nameMatch = welcomeElement.textContent.match(/Vælkomin\\s+(.+?)\\s*!/i);
+                        if (nameMatch) {
+                            return {
+                                studentName: nameMatch[1].trim(),
+                                class: document.querySelector('.student-class') ? 
+                                       document.querySelector('.student-class').textContent.trim() : 
+                                       "Unknown"
+                            };
+                        }
+                    }
+                    
+                    // Try other possible elements for name
+                    const possibleNameSelectors = [
+                        '.student-name', 
+                        '.user-info',
+                        'h1.user-name', 
+                        '.header-content .name'
+                    ];
+                    
+                    for (const selector of possibleNameSelectors) {
+                        const element = document.querySelector(selector);
+                        if (element && element.textContent.trim()) {
+                            const name = element.textContent.trim();
+                            
+                            // Try to find class information
+                            let className = "Unknown";
+                            const possibleClassSelectors = [
+                                '.student-class',
+                                '.class-info',
+                                '.user-class'
+                            ];
+                            
+                            for (const classSelector of possibleClassSelectors) {
+                                const classElement = document.querySelector(classSelector);
+                                if (classElement && classElement.textContent.trim()) {
+                                    className = classElement.textContent.trim();
+                                    break;
+                                }
+                            }
+                            
+                            return {
+                                studentName: name,
+                                class: className
+                            };
+                        }
+                    }
+                    
+                    return {
+                        studentName: "Unknown", 
+                        class: "Unknown"
+                    };
+                }()""",
+                error_message="Failed to extract student info using direct extraction"
+            )
+            
+            if student_info and student_info.get("studentName") != "Unknown":
+                logger.info(f"Extracted student info using direct extraction: {student_info}")
+                return student_info
+                
+            logger.warning("Could not extract student info from page")
+            return {"studentName": "Unknown", "class": "Unknown"}
+            
+        except Exception as e:
+            logger.error(f"Error extracting student info: {e}")
+            return {"studentName": "Unknown", "class": "Unknown"}
+
 # Export all functions that should be importable
 __all__ = [
     "JavaScriptIntegrationError",
@@ -486,5 +589,6 @@ __all__ = [
     "test_javascript_integration",
     "extract_homework_content_js",
     "extract_all_homework_content_js",
-    "get_current_week_info"
+    "get_current_week_info",
+    "extract_student_info_js"
 ] 

@@ -49,10 +49,12 @@ async def extract_student_info(page):
         # Check for pattern like "Næmingatímatalva: Rókur Kvilt Meitilberg, 22y"
         title_match = re.search(r"Næmingatímatalva:\s*([^,]+),\s*([^\.]+)", title)
         if title_match:
-            return {
+            student_info = {
                 "student_name": title_match.group(1).strip(),
                 "class": title_match.group(2).strip()
             }
+            logger.info(f"Found student info in page title: {student_info['student_name']}, {student_info['class']}")
+            return student_info
         
         # Try to find it in a heading element
         student_info = await page.evaluate('''() => {
@@ -74,12 +76,13 @@ async def extract_student_info(page):
         }''')
         
         if student_info:
+            logger.info(f"Found student info in page element: {student_info['student_name']}, {student_info['class']}")
             return student_info
     except Exception as e:
         logger.error(f"Error extracting student info: {e}")
     
     # Default to constants as fallback
-    logger.info("Using default student info from constants")
+    logger.warning("Could not extract student info, using default values")
     return {
         "student_name": "Rókur Kvilt Meitilberg",
         "class": "22y"

@@ -634,7 +634,8 @@ async def export_all_weeks_api(
     """
     from glasir_timetable.navigation import navigate_and_extract_api, process_single_week_api
     from glasir_timetable.js_navigation.js_integration import get_student_id
-    from glasir_timetable.api_client import extract_lname_from_page, extract_timer_value_from_page, fetch_weeks_data
+    from glasir_timetable.api_client import fetch_weeks_data
+    from glasir_timetable.utils.param_utils import parse_dynamic_params
     
     # Create result summary dictionary
     results = {
@@ -653,12 +654,10 @@ async def export_all_weeks_api(
         student_id = await get_student_id(page)
         logger.info(f"Found student ID: {student_id}")
         
-        # Get lname value
-        lname_value = await extract_lname_from_page(page)
+        # Get lname and timer values
+        content = await page.content()
+        lname_value, timer_value = parse_dynamic_params(content)
         logger.info(f"Found lname value: {lname_value}")
-        
-        # Get timer value
-        timer_value = await extract_timer_value_from_page(page)
         logger.info(f"Found timer value: {timer_value}")
         
     except Exception as e:

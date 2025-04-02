@@ -79,7 +79,8 @@ from glasir_timetable.navigation import (
     process_single_week,
     navigate_and_extract,
     get_week_directions,
-    navigate_and_extract_api
+    navigate_and_extract_api,
+    extract_min_max_week_offsets
 )
 
 from glasir_timetable.models import TimetableData
@@ -89,10 +90,11 @@ from glasir_timetable.utils.model_adapters import timetable_data_to_dict
 from glasir_timetable.service_factory import set_config, create_services
 
 from glasir_timetable.api_client import (
-    fetch_homework_for_lessons,
-    extract_lname_from_page,
-    extract_timer_value_from_page
+    fetch_homework_for_lessons
 )
+
+from glasir_timetable.session import AuthSessionManager
+from glasir_timetable.utils.param_utils import parse_dynamic_params
 
 def generate_credentials_file(file_path, username, password):
     """
@@ -228,7 +230,7 @@ async def main():
         
         # Define cleanup functions
         cleanup_funcs = {
-            "browser": lambda browser: asyncio.create_task(browser.close())
+            "browser": lambda browser: browser.close()
         }
         
         # Use async resource cleanup context manager
@@ -294,32 +296,17 @@ async def main():
                 
                 logger.info(f"Using {len(api_cookies)} cookies for API requests")
                 
-                # Initialize student_id for JavaScript navigation
-                student_id = None
+                # Inject the timetable script before using JavaScript-dependent functions
+                logger.info("Injecting JavaScript for timetable navigation")
+                await inject_timetable_script(page)
                 
-                async with error_screenshot_context(page, "js_init", "javascript_errors", take_screenshot=args.enable_screenshots):
-                    # Inject the JavaScript navigation script
-                    await inject_timetable_script(page)
-                    
-                    # Test the JavaScript integration if requested
-                    if args.test_js:
-                        logger.info("Testing JavaScript integration...")
-                        await test_javascript_integration(page)
-                        logger.info("JavaScript integration test passed!")
-                        
-                    # Get student ID using the navigation service
-                    student_id = await navigation_service.get_student_id(page)
-                    logger.info(f"Found student ID: {student_id}")
-                
-                # Extract dynamic values for API if we're using the API approach
-                lname_value = None
-                timer_value = None
-                if args.use_api:
-                    logger.info("Extracting dynamic values for API requests...")
-                    lname_value = await extract_lname_from_page(page)
-                    timer_value = await extract_timer_value_from_page(page)
-                    logger.info(f"Extracted lname_value: {lname_value}")
-                    logger.info(f"Extracted timer_value: {timer_value}")
+                # Get basic info about the student and fetch key lname parameter
+                student_id = await get_student_id(page)
+                content = await page.content()
+                lname_value, timer_value = parse_dynamic_params(content)
+                logger.info(f"Student ID: {student_id}")
+                logger.info(f"lname value: {lname_value}")
+                logger.info(f"timer value: {timer_value}")
                 
                 # Extract dynamic teacher mapping using the extraction service
                 teacher_map = await extraction_service.extract_teacher_map(
@@ -338,39 +325,33 @@ async def main():
                 
                 # Process all weeks if requested
                 if args.all_weeks:
-                    logger.info("Processing all weeks from all academic years...")
+                    logger.info("Processing range of weeks using --all-weeks (dynamically determined)...")
                     
-                    if args.use_api:
-                        # Use API-based implementation for all weeks export
-                        logger.info("Using API-based implementation for exporting all weeks")
-                        from glasir_timetable.js_navigation.export import export_all_weeks_api
-                        export_results = await export_all_weeks_api(
+                    try:
+                        # Dynamically extract the available week range with API support if needed
+                        min_offset, max_offset = await extract_min_max_week_offsets(
                             page=page,
-                            output_dir=args.output_dir,
-                            teacher_map=teacher_map,
-                            api_cookies=api_cookies
+                            api_cookies=api_cookies if args.use_api else None,
+                            use_api=args.use_api,
+                            student_id=student_id if args.use_api else None,
+                            lname_value=lname_value if args.use_api else None,
+                            timer_value=timer_value if args.use_api else None
                         )
-                    else:
-                        # Always use JS-based implementation for all weeks export
-                        logger.info("Using JavaScript-based implementation for exporting all weeks")
-                        export_results = await export_all_weeks(
-                            page=page,
-                            output_dir=args.output_dir,
-                            teacher_map=teacher_map,
-                            student_id=student_id,
-                            api_cookies=api_cookies,
-                            concurrent_homework=True  # Use the new concurrent homework processing approach
-                        )
-                    
-                    # Log results
-                    logger.info(f"Completed processing all weeks. Extracted {export_results['processed_weeks']} of {export_results['total_weeks']} weeks.")
-                    if export_results['errors']:
-                        logger.warning(f"Encountered {len(export_results['errors'])} errors during extraction.")
-                    
-                    return
+                        
+                        # The extracted min_offset is negative (like -65) and max_offset is positive (like 15)
+                        # We need to set weekbackward to abs(min_offset) and weekforward to max_offset
+                        if args.weekforward == 0:  # Only override if not explicitly set
+                            args.weekforward = max_offset
+                        if args.weekbackward == 0:  # Only override if not explicitly set
+                            args.weekbackward = abs(min_offset)
+                        
+                        logger.info(f"Using dynamically determined range: {args.weekforward} weeks forward, {args.weekbackward} weeks backward")
+                    except ValueError as e:
+                        logger.error(f"{e} Cannot continue with --all-weeks option.")
+                        return  # Exit the script
                 
                 # Process specific weeks
-                else:
+                if args.weekforward > 0 or args.weekbackward > 0:
                     # Extract current week's timetable data
                     logger.info("Extracting current week's timetable data...")
                     
@@ -434,24 +415,25 @@ async def main():
                     logger.info(f"Timetable data saved to {output_path}")
                     
                     # If additional weeks are requested, process them
-                    if args.weekforward > 0 or args.weekbackward > 0:
-                        logger.info(f"Processing additional weeks: {args.weekforward} forward, {args.weekbackward} backward")
-                        
-                        # Get the week directions
-                        directions = await get_week_directions(args)
-                        
-                        # Process all requested weeks
-                        # Each week uses sequential homework extraction approach
-                        additional_results = await process_weeks(
-                            page=page,
-                            directions=directions,
-                            teacher_map=teacher_map,
-                            student_id=student_id,
-                            output_dir=args.output_dir,
-                            api_cookies=api_cookies,
-                            processed_weeks={week_info['week_num']} if week_info else set(),
-                            use_api=args.use_api  # Pass the use_api flag to determine which approach to use
-                        )
+                    logger.info(f"Processing additional weeks: {args.weekforward} forward, {args.weekbackward} backward")
+                    
+                    # Get the week directions
+                    directions = await get_week_directions(args)
+                    
+                    # Process all requested weeks
+                    # Each week uses sequential homework extraction approach
+                    additional_results = await process_weeks(
+                        page=page,
+                        directions=directions,
+                        teacher_map=teacher_map,
+                        student_id=student_id,
+                        output_dir=args.output_dir,
+                        api_cookies=api_cookies,
+                        processed_weeks={week_info['week_num']} if week_info else set(),
+                        use_api=args.use_api,  # Pass the use_api flag to determine which approach to use
+                        lname_value=lname_value,
+                        timer_value=timer_value
+                    )
 
             # Print summary of errors
             error_summary = get_error_summary()

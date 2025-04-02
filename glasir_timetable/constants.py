@@ -63,10 +63,10 @@ LEVEL_MAP = {
 
 # URLs
 GLASIR_BASE_URL = "https://tg.glasir.fo"
-GLASIR_TIMETABLE_URL = f"{GLASIR_BASE_URL}/timetable/main.asp"
-NOTE_ASP_URL = f"{GLASIR_BASE_URL}/timetable/note.asp"
-TEACHER_MAP_URL = f"{GLASIR_BASE_URL}/timetable/laerer.asp"
-TIMETABLE_INFO_URL = f"{GLASIR_BASE_URL}/timetable/skema_data.asp"
+GLASIR_TIMETABLE_URL = f"{GLASIR_BASE_URL}/132n/"
+NOTE_ASP_URL = f"{GLASIR_BASE_URL}/i/note.asp"
+TEACHER_MAP_URL = f"{GLASIR_BASE_URL}/i/teachers.asp"
+TIMETABLE_INFO_URL = f"{GLASIR_BASE_URL}/i/udvalg.asp"
 
 # Default headers for API requests
 DEFAULT_HEADERS = {
@@ -81,6 +81,7 @@ DEFAULT_TIMER_FALLBACK = "0"   # Fallback for timer if extraction fails
 
 # File paths
 TEACHER_CACHE_FILE = "glasir_timetable/teacher_cache.json"
+STUDENT_ID_FILE = "glasir_timetable/student-id.json"
 
 # Auth cookie file path
 AUTH_COOKIES_FILE = "cookies.json"

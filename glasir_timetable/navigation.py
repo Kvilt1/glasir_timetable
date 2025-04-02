@@ -14,6 +14,7 @@ import re
 import json
 import time
 
+from playwright.async_api import Page
 from glasir_timetable import logger, add_error
 from glasir_timetable.extractors import extract_timetable_data
 # Import directly from homework_parser to avoid circular import
@@ -22,10 +23,9 @@ from glasir_timetable.api_client import (
     fetch_homework_for_lessons,
     fetch_timetable_for_week,
     fetch_weeks_data,
-    extract_lname_from_page,
-    extract_timer_value_from_page,
     fetch_timetables_for_weeks,
-    get_student_id
+    get_student_id,
+    extract_week_range
 )
 from glasir_timetable.js_navigation.js_integration import (
     navigate_to_week_js,
@@ -42,6 +42,13 @@ from glasir_timetable.utils import (
 from glasir_timetable.utils.error_utils import error_screenshot_context
 from glasir_timetable.models import TimetableData
 from glasir_timetable.utils.model_adapters import dict_to_timetable_data
+from glasir_timetable.utils.param_utils import parse_dynamic_params
+from glasir_timetable.utils.error_utils import handle_errors, evaluate_js_safely
+from glasir_timetable.constants import (
+    GLASIR_BASE_URL,
+    GLASIR_TIMETABLE_URL,
+    STUDENT_ID_FILE
+)
 
 
 @asynccontextmanager
@@ -100,7 +107,8 @@ async def navigate_and_extract(page, week_offset, teacher_map, student_id, api_c
         # Extract lname value dynamically if we have API cookies
         lname_value = None
         if api_cookies:
-            lname_value = await extract_lname_from_page(page)
+            content = await page.content()
+            lname_value, _ = parse_dynamic_params(content)
         
         # Navigate to the target week
         logger.info(f"Navigating to week offset {week_offset}...")
@@ -157,6 +165,7 @@ async def navigate_and_extract(page, week_offset, teacher_map, student_id, api_c
                 lesson_id = event.get("lessonId")
                 if lesson_id and lesson_id in homework_map:
                     event["description"] = homework_map[lesson_id]
+                    merged_count += 1
             
             logger.info(f"Merged {merged_count} homework descriptions into events")
         
@@ -254,353 +263,103 @@ async def process_single_week(page, week_offset, teacher_map, student_id, output
 
 
 async def process_weeks(page, directions, teacher_map, student_id, output_dir, 
-                       api_cookies=None, processed_weeks=None, use_api=False):
+                       api_cookies=None, processed_weeks=None, use_api=False,
+                       lname_value=None, timer_value=None):
     """
-    Process multiple weeks based on the provided directions/offsets.
-    Fetches timetable HTML concurrently if using the API approach.
+    Process multiple weeks using either JavaScript navigation or API-based extraction.
     
     Args:
         page: The Playwright page object
         directions: List of week offsets to process
         teacher_map: Dictionary mapping teacher initials to full names
-        student_id: The student ID GUID (Only needed if use_api=False)
+        student_id: The student ID GUID
         output_dir: Directory to save output files
-        api_cookies: Cookies for API requests (Required if use_api=True)
-        processed_weeks: Set of already processed week numbers
-        use_api: Whether to use the API-based approach instead of JavaScript navigation
+        api_cookies: Cookies for API requests
+        processed_weeks: Set of already processed week numbers (to avoid duplicates)
+        use_api: Whether to use API-based extraction instead of JavaScript navigation
+        lname_value: Optional pre-extracted lname value for API requests
+        timer_value: Optional pre-extracted timer value for API requests
         
     Returns:
-        int: Number of successfully processed weeks
+        Set of processed week numbers
     """
     if processed_weeks is None:
         processed_weeks = set()
-    
-    total_weeks = len(directions)
-    if total_weeks == 0:
-        logger.info("No weeks to process")
-        return 0
         
-    logger.info(f"Processing {total_weeks} additional weeks. API mode: {use_api}")
-    
-    # Setup progress tracking
-    start_time = time.time()
-    success_count = 0
-    last_progress_time = start_time
-    progress_interval = 5.0  # seconds between progress updates
-    
+    # Define a progress logging function
     def log_progress(current, total, step_name=""):
-        nonlocal last_progress_time
-        current_time = time.time()
-        elapsed = current_time - start_time
-        
-        if current > 0 and elapsed > 0:
-            estimated_total = elapsed * total / current
-            remaining = estimated_total - elapsed
-            
-            # Format time nicely
-            if remaining < 60:
-                time_str = f"{remaining:.1f} seconds"
-            elif remaining < 3600:
-                time_str = f"{remaining/60:.1f} minutes"
-            else:
-                time_str = f"{remaining/3600:.1f} hours"
-                
-            logger.info(f"Progress: {current}/{total} weeks {step_name} ({(current/total*100):.1f}%) - Est. remaining: {time_str}")
-        else:
-            logger.info(f"Progress: {current}/{total} weeks {step_name} (0%) - Starting...")
-            
-        last_progress_time = current_time
+        percent = int((current / total) * 100)
+        progress_bar = f"[{'=' * (percent // 5)}>{' ' * (20 - (percent // 5))}]"
+        logger.info(f"Processing weeks: {progress_bar} {percent}% ({current}/{total}) {step_name}")
     
+    # Sort directions to process current week first (offset 0)
+    directions = sorted(directions, key=lambda x: abs(x))
+    
+    # Choose the processing approach based on the use_api flag
     if use_api:
-        if not api_cookies:
-            logger.error("API cookies are required for API-based processing.")
-            return 0
+        # Only extract if not provided     
+        if lname_value is None or timer_value is None:
+            content = await page.content()
+            lname_value, timer_value = parse_dynamic_params(content)
+        logger.info(f"Using API-based approach with lname={lname_value}, timer={timer_value}")
+        
+        # Process each week using the API-based method
+        total_weeks = len(directions)
+        for idx, week_offset in enumerate(directions):
+            log_progress(idx + 1, total_weeks, f"Week offset {week_offset}")
             
-        # --- API-based Concurrent Processing ---
-        lname_value = None
-        timer_value = None
-        week_html_map = {}
-        all_lesson_ids = []
-        processed_data_cache = {} # Cache processed data before homework is added {offset: data}
-        week_details_cache = {} # Cache details needed for saving {offset: {filename, output_path, week_num}}
-
-        try:
-            # 1. Extract common values needed for API calls
-            student_api_id = await get_student_id(page) # Still need student ID for API
-            if not student_api_id:
-                 logger.error("Failed to get student ID for API calls.")
-                 return 0
-                 
-            lname_value = await extract_lname_from_page(page)
-            timer_value = await extract_timer_value_from_page(page)
-            logger.info(f"Using API-based approach with lname={lname_value}, timer={timer_value}")
-
-            # 2. Fetch all timetable HTMLs concurrently
-            week_html_map = await fetch_timetables_for_weeks(
-                cookies=api_cookies,
-                student_id=student_api_id,
-                week_offsets=directions,
+            # Use API-based processing
+            result = await process_single_week_api(
+                page=page,
+                week_offset=week_offset,
+                output_dir=output_dir,
+                teacher_map=teacher_map,
+                api_cookies=api_cookies,
                 lname_value=lname_value,
                 timer_value=timer_value
             )
-            logger.info(f"Fetched HTML for {len([html for html in week_html_map.values() if html])} out of {len(directions)} weeks.")
             
-            # 2.1 Retry logic for any weeks that failed to fetch
-            failed_offsets = [offset for offset in directions if offset not in week_html_map or week_html_map[offset] is None]
-            if failed_offsets:
-                logger.info(f"Retrying {len(failed_offsets)} failed week fetches...")
-                max_retries = 2
-                for retry in range(max_retries):
-                    if not failed_offsets:
-                        break
-                        
-                    logger.info(f"Retry attempt {retry+1}/{max_retries} for offsets: {failed_offsets}")
-                    # Generate a new timer value for retry to avoid caching issues
-                    retry_timer = int(time.time() * 1000)
-                    
-                    # Retry with increased timeout and slightly lower concurrency
-                    retry_html_map = await fetch_timetables_for_weeks(
-                        cookies=api_cookies,
-                        student_id=student_api_id,
-                        week_offsets=failed_offsets,
-                        max_concurrent=min(3, len(failed_offsets)),  # Lower concurrency
-                        lname_value=lname_value,
-                        timer_value=retry_timer
-                    )
-                    
-                    # Update the main map with successful retries
-                    successful_retries = 0
-                    for offset, html in retry_html_map.items():
-                        if html:
-                            week_html_map[offset] = html
-                            successful_retries += 1
-                    
-                    logger.info(f"Retry {retry+1} succeeded for {successful_retries}/{len(failed_offsets)} weeks")
-                    
-                    # Update the list of failed offsets for potential next retry
-                    failed_offsets = [offset for offset in failed_offsets if offset not in retry_html_map or retry_html_map[offset] is None]
-                
-                # Final logging after all retries
-                if failed_offsets:
-                    logger.warning(f"After all retries, still failed to fetch {len(failed_offsets)} weeks: {failed_offsets}")
-                else:
-                    logger.info("Successfully fetched all weeks after retries")
-
-        except Exception as e:
-            logger.error(f"Failed during initial API setup or concurrent fetch: {e}")
-            # Proceed to process any HTML that was successfully fetched
-            
-        # 3. Process each week's HTML sequentially (using page for extraction)
-        processed_count = 0
-        for offset in directions:
-            try:
-                week_html = week_html_map.get(offset)
-                if not week_html:
-                    logger.warning(f"Skipping week offset {offset}: No HTML fetched.")
-                    continue
-
-                # Update progress periodically
-                processed_count += 1
-                current_time = time.time()
-                if current_time - last_progress_time >= progress_interval or processed_count == total_weeks:
-                    log_progress(processed_count, total_weeks, "processed")
-
-                # Inject HTML into the page
-                escaped_html = week_html.replace('`', '\\\\`')
-                # Fix triple-quoted string to avoid linter errors
-                js_code = """
-                document.getElementById('MyWindowMain').innerHTML = `{html}`;
-                """.format(html=escaped_html)
-                await page.evaluate(js_code)
-                
-                # Extract data from the injected HTML
-                timetable_data, week_info, lesson_ids = await extract_timetable_data(page, teacher_map)
-
-                if not timetable_data or not week_info:
-                    logger.error(f"Failed to extract timetable data from HTML for week offset {offset}")
-                    continue
-                    
-                # Normalize data
-                year = week_info.get("year")
-                start_date = week_info.get("startDate")
-                end_date = week_info.get("endDate")
-                week_num_raw = week_info.get("weekNumber")
-
-                if start_date and end_date and year:
-                    start_date, end_date = normalize_dates(start_date, end_date, year)
-                    week_info["startDate"] = start_date
-                    week_info["endDate"] = end_date
-                
-                week_num = normalize_week_number(week_num_raw) if week_num_raw else 0
-                week_info["weekNumber"] = week_num
-                timetable_data["weekInfo"] = week_info # Ensure updated info is stored
-
-                # Generate filename and path
-                filename = generate_week_filename(year, week_num, start_date, end_date)
-                output_path = os.path.join(output_dir, filename)
-
-                # Check if already processed (file exists)
-                if os.path.exists(output_path):
-                    logger.info(f"Week already exported (offset {offset}): {filename}")
-                    # Add to processed_weeks set based on filename
-                    if week_num not in processed_weeks:
-                        processed_weeks.add(week_num)
-                        logger.debug(f"Added week {week_num} to processed_weeks set based on existing file.")
-                    success_count += 1 # Count skipped as success for this run's purpose
-                    continue # Skip further processing for this week
-
-                # Store data and details for later homework association and saving
-                processed_data_cache[offset] = timetable_data
-                all_lesson_ids.extend(lesson_ids)
-                week_details_cache[offset] = {
-                    "filename": filename, 
-                    "output_path": output_path,
-                    "week_num": week_num,
-                    "year": year,
-                    "start_date": start_date,
-                    "end_date": end_date
-                }
-                
-            except Exception as e:
-                logger.error(f"Error processing fetched HTML for week offset {offset}: {e}")
-                import traceback
-                logger.debug(f"Traceback: {traceback.format_exc()}")
-
-        # 4. Fetch all homework concurrently
-        homework_map = {}
-        if all_lesson_ids:
-            unique_lesson_ids = list(set(all_lesson_ids))
-            logger.info(f"Fetching homework for {len(unique_lesson_ids)} unique lessons across processed weeks.")
-            try:
-                # Update progress for homework fetch
-                log_progress(0, len(processed_data_cache), "homework fetch")
-                
-                # Consider using fetch_homework_for_lessons_with_retry if available/needed
-                homework_map = await fetch_homework_for_lessons(
-                    cookies=api_cookies,
-                    lesson_ids=unique_lesson_ids,
-                    lname_value=lname_value,
-                    timer_value=timer_value
-                )
-                
-                # Update progress after homework fetch
-                log_progress(len(processed_data_cache), len(processed_data_cache), "homework fetch")
-                logger.info(f"Fetched homework for {len(homework_map)} lessons.")
-            except Exception as e:
-                logger.error(f"Error fetching homework concurrently: {e}")
-                import traceback
-                logger.debug(f"Traceback: {traceback.format_exc()}")
-
-        # 5. Associate homework and save files
-        saved_count = 0
-        for offset, timetable_data in processed_data_cache.items():
-            try:
-                # Add homework to timetable data
-                if homework_map:
-                    for event in timetable_data.get("events", []):
-                        lesson_id = event.get("lessonId")
-                        if lesson_id and lesson_id in homework_map:
-                            event["description"] = homework_map[lesson_id] # Assuming description field is correct
-                
-                # Save the processed data
-                details = week_details_cache.get(offset)
-                if details:
-                    output_path = details["output_path"]
-                    filename = details["filename"]
-                    week_num = details["week_num"]
-                    
-                    # Ensure we have a valid filename by regenerating it if needed
-                    if filename.endswith("0 - None-None.json") or "None" in filename:
-                        year = details.get("year", datetime.now().year)
-                        start_date = details.get("start_date", "")
-                        end_date = details.get("end_date", "")
-                        week_num = details.get("week_num", 0)
-                        
-                        # Extract from timetable_data.weekInfo if we have it
-                        if "weekInfo" in timetable_data:
-                            week_info = timetable_data["weekInfo"]
-                            if not year or year == 0:
-                                year = week_info.get("year", datetime.now().year)
-                            if not week_num or week_num == 0:
-                                week_num = week_info.get("weekNumber", offset)
-                            if not start_date:
-                                start_date = week_info.get("startDate", "")
-                            if not end_date:
-                                end_date = week_info.get("endDate", "")
-                                
-                        # If we're still missing the week number, use the offset as a last resort
-                        if not week_num or week_num == 0:
-                            # For negative offsets, they are likely previous weeks
-                            # For positive offsets, they are likely next weeks
-                            current_week = datetime.now().isocalendar()[1]
-                            week_num = current_week + offset
-                            
-                        # Create a better filename
-                        filename = f"{year} Vika {week_num}"
-                        if start_date and end_date:
-                            filename += f" - {start_date}-{end_date}"
-                        filename += ".json"
-                        
-                        output_path = os.path.join(output_dir, filename)
-                    
-                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                    with open(output_path, 'w', encoding='utf-8') as f:
-                        json.dump(timetable_data, f, ensure_ascii=False, indent=4)
-                    
-                    saved_count += 1
-                    if saved_count % 5 == 0 or saved_count == len(processed_data_cache):
-                        log_progress(saved_count, len(processed_data_cache), "saved")
-                        
-                    logger.info(f"Successfully processed and saved week offset {offset} as {filename}")
-                    
-                    if week_num not in processed_weeks:
-                         processed_weeks.add(week_num) # Add successfully saved week
-                    success_count += 1
-                else:
-                     logger.error(f"Could not save data for offset {offset}: Missing cached details.")
-
-            except Exception as e:
-                logger.error(f"Error associating homework or saving file for offset {offset}: {e}")
-                import traceback
-                logger.debug(f"Traceback: {traceback.format_exc()}")
-                
-        # --- End of API-based Concurrent Processing ---
-
+            # Check if the processing was successful and has week info
+            if result and result.get("success") and not result.get("skipped"):
+                # Extract week info from the timetable data that was saved
+                # This is a simplified approach - we should enhance process_single_week_api 
+                # to return the week_info directly in the result
+                week_info_path = os.path.join(output_dir, result.get("filename", ""))
+                if os.path.exists(week_info_path):
+                    try:
+                        with open(week_info_path, 'r', encoding='utf-8') as f:
+                            imported_data = json.load(f)
+                            if "weekInfo" in imported_data:
+                                week_info = imported_data["weekInfo"]
+                                if 'year' in week_info and ('weekNumber' in week_info or 'week_num' in week_info):
+                                    year = week_info.get('year')
+                                    week_num = week_info.get('weekNumber', week_info.get('week_num'))
+                                    # Add to processed weeks using standard format
+                                    processed_weeks.add(f"{year}-{week_num}")
+                                    logger.info(f"Added week {year}-{week_num} to processed weeks")
+                    except Exception as e:
+                        logger.error(f"Error extracting week info from saved file: {e}")
     else:
-        # --- Original JS-based Sequential Processing ---
-        logger.info("Using JS-based navigation approach.")
-        if not student_id:
-            logger.warning("Student ID might be required for JS navigation but was not provided.")
+        # Use JavaScript-based navigation
+        logger.info("Using JavaScript-based navigation approach")
+        
+        # Process each week using navigation
+        total_weeks = len(directions)
+        for idx, week_offset in enumerate(directions):
+            log_progress(idx + 1, total_weeks, f"Week offset {week_offset}")
             
-        for i, direction in enumerate(directions):
-            # Update progress periodically
-            if (i+1) % 5 == 0 or i+1 == total_weeks or time.time() - last_progress_time >= progress_interval:
-                log_progress(i+1, total_weeks, "JS navigation")
-                
-            try:
-                # Process the week using JS-based navigation
-                # Note: process_single_week handles its own file saving and processed_weeks update
-                success = await process_single_week(
-                    page=page,
-                    week_offset=direction,
-                    teacher_map=teacher_map,
-                    student_id=student_id, # Pass student_id here
-                    output_dir=output_dir,
-                    api_cookies=api_cookies, # May be used internally by process_single_week for homework
-                    processed_weeks=processed_weeks # Pass the set to be updated
-                )
-                
-                if success:
-                    success_count += 1
-                
-            except Exception as e:
-                logger.error(f"Error processing week with offset {direction} using JS method: {e}")
-                import traceback
-                logger.debug(f"Traceback: {traceback.format_exc()}")
-        # --- End of JS-based Sequential Processing ---
-
-    logger.info(f"Finished processing. Successfully processed/skipped {success_count} of {len(directions)} requested weeks.")
-    return success_count
+            # Use navigation-based processing
+            processed = await process_single_week(
+                page=page,
+                week_offset=week_offset,
+                teacher_map=teacher_map,
+                student_id=student_id,
+                output_dir=output_dir,
+                api_cookies=api_cookies,
+                processed_weeks=processed_weeks
+            )
+    
+    return processed_weeks
 
 
 async def get_week_directions(args):
@@ -632,6 +391,65 @@ async def get_week_directions(args):
     return directions 
 
 
+async def extract_min_max_week_offsets(page, api_cookies=None, use_api=False, student_id=None, lname_value=None, timer_value=None):
+    """
+    Extract the minimum and maximum week offsets available in the timetable.
+    
+    Supports both direct HTML parsing (original method) and API-based extraction.
+    
+    Args:
+        page: The Playwright page object containing the timetable
+        api_cookies: Optional cookies for API-based extraction (required if use_api=True)
+        use_api: Whether to use the API approach rather than HTML parsing
+        student_id: Student ID for API requests (required if use_api=True)
+        lname_value: Optional lname value for API requests
+        timer_value: Optional timer value for API requests
+        
+    Returns:
+        tuple: (min_offset, max_offset) - the earliest and latest available week offsets
+        
+    Raises:
+        ValueError: If no week offset values can be found
+    """
+    if use_api:
+        if not api_cookies:
+            logger.error("API cookies required for API-based week range extraction")
+            raise ValueError("API cookies required for API-based week range extraction")
+            
+        if not student_id:
+            logger.error("Student ID required for API-based week range extraction")
+            raise ValueError("Student ID required for API-based week range extraction")
+            
+        # Use the API-based approach
+        return await extract_week_range(
+            cookies=api_cookies,
+            student_id=student_id,
+            lname_value=lname_value,
+            timer_value=timer_value
+        )
+    else:
+        # Original HTML parsing approach
+        # Get the page content
+        content = await page.content()
+        
+        # Use regular expressions to find all week offset values in the MyUpdate function calls
+        import re
+        pattern = r"MyUpdate\('/i/udvalg\.asp', '[^']*&v=(-?\d+)'[^']*\)"
+        matches = re.findall(pattern, content)
+        
+        if not matches:
+            logger.error("No week offset values found in page content")
+            raise ValueError("Failed to extract week offset range from timetable. Cannot determine available weeks.")
+        
+        # Convert to integers and find min/max
+        offsets = [int(match) for match in matches]
+        min_offset = min(offsets)
+        max_offset = max(offsets)
+        
+        logger.info(f"Extracted week offset range: {min_offset} to {max_offset}")
+        return min_offset, max_offset
+
+
 async def process_single_week_api(
     page, 
     week_offset, 
@@ -656,6 +474,11 @@ async def process_single_week_api(
         
     Returns:
         dict: Result of processing, including success status and any errors
+              
+              NOTE FOR FUTURE IMPROVEMENT: This function should return the week_info
+              directly in the result dictionary along with success/failure status.
+              This would make it easier for callers to access week_info without
+              having to read the saved file.
     """
     logger.warning("process_single_week_api is deprecated for use within process_weeks(use_api=True)")
     try:
@@ -753,36 +576,42 @@ async def navigate_and_extract_api(
     timer_value=None
 ):
     """
-    DEPRECATED by the concurrent logic in process_weeks when use_api=True.
-    Navigate to a specific week and extract timetable data using API-based navigation.
-    Kept for potential other uses or reference.
+    Extract timetable data using API-based approach without page navigation.
     
     Args:
-        page: The Playwright page object
-        week_offset: Offset from the current week (-1 for previous week, etc.)
+        page: The playwright page object (used mainly for parameter extraction)
+        week_offset: Week offset (0=current, positive=forward, negative=backward)
         teacher_map: Dictionary mapping teacher initials to full names
-        api_cookies: Dictionary of cookies for API requests
-        lname_value: Optional dynamically extracted lname value to use with API
-        timer_value: Optional timer value to use with API
+        api_cookies: Cookies for API requests
+        lname_value: Optional pre-extracted lname value
+        timer_value: Optional pre-extracted timer value
         
     Returns:
         tuple: (timetable_data, week_info, lesson_ids)
     """
-    logger.warning("navigate_and_extract_api is deprecated for use within process_weeks(use_api=True)")
     try:
-        # Get student ID for API call
-        student_id = await get_student_id(page)
-        
+        if not api_cookies:
+            logger.error("No API cookies provided")
+            return None, None, []
+            
         # Get lname_value if not provided
         if lname_value is None:
-            lname_value = await extract_lname_from_page(page)
+            content = await page.content()
+            lname_value, _ = parse_dynamic_params(content)
             logger.info(f"Extracted lname value: {lname_value}")
         
         # Get timer_value if not provided
         if timer_value is None:
-            timer_value = await extract_timer_value_from_page(page)
+            content = await page.content()
+            _, timer_value = parse_dynamic_params(content)
             logger.info(f"Extracted timer value: {timer_value}")
             
+        # Get student_id if needed for API calls
+        student_id = await get_student_id(page)
+        if not student_id:
+            logger.error("Could not extract student ID")
+            return None, None, []
+        
         # Use API to fetch the HTML for the specified week
         week_html = await fetch_timetable_for_week(
             cookies=api_cookies,
@@ -819,10 +648,14 @@ async def navigate_and_extract_api(
             logger.info(f"Fetched homework for {len(homework_map)}/{len(lesson_ids)} lessons")
             
             # Add homework to timetable data
+            merged_count = 0
             for event in timetable_data.get("events", []):
                 lesson_id = event.get("lessonId")
                 if lesson_id and lesson_id in homework_map:
                     event["description"] = homework_map[lesson_id]
+                    merged_count += 1
+            
+            logger.info(f"Merged {merged_count} homework descriptions into events")
         
         return timetable_data, week_info, lesson_ids
         
@@ -830,7 +663,7 @@ async def navigate_and_extract_api(
         logger.error(f"Error in navigate_and_extract_api: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
-        return None, None, [] 
+        return None, None, []
 
 
 async def get_student_id(page):
@@ -838,8 +671,9 @@ async def get_student_id(page):
     Extract the student ID from the given page.
     
     This function tries multiple methods to extract the student ID:
-    1. First tries the JS integration function if available
-    2. Falls back to direct extraction from the page content if JS integration is not available
+    1. First checks if the ID is saved in student-id.json
+    2. If not found, tries the JS integration function if available
+    3. Falls back to direct extraction from the page content
     
     Args:
         page: The Playwright page object
@@ -848,7 +682,19 @@ async def get_student_id(page):
         str: The student ID or None if not found
     """
     try:
-        # First try using the JS integration function
+        # First check if the student ID is already saved
+        if os.path.exists(STUDENT_ID_FILE):
+            try:
+                with open(STUDENT_ID_FILE, 'r') as f:
+                    data = json.load(f)
+                    if data and 'student_id' in data and data['student_id']:
+                        logger.info(f"Loaded student ID from file: {data['student_id']}")
+                        return data['student_id']
+            except Exception as e:
+                logger.error(f"Error loading student ID from file: {e}")
+                # Continue with extraction methods
+
+        # Try using the JS integration function
         from glasir_timetable.js_navigation.js_integration import get_student_id as js_get_student_id
         
         try:
@@ -857,7 +703,16 @@ async def get_student_id(page):
             
             if has_js_integration:
                 # Use the JS integration function
-                return await js_get_student_id(page)
+                student_id = await js_get_student_id(page)
+                if student_id:
+                    # Save the student ID for future use
+                    try:
+                        with open(STUDENT_ID_FILE, 'w') as f:
+                            json.dump({'student_id': student_id}, f)
+                        logger.info(f"Saved student ID to file: {student_id}")
+                    except Exception as e:
+                        logger.error(f"Error saving student ID to file: {e}")
+                    return student_id
         except Exception as e:
             logger.debug(f"JS integration for student ID extraction not available: {e}")
             # Continue with fallback methods
@@ -868,7 +723,15 @@ async def get_student_id(page):
         try:
             local_storage = await page.evaluate("localStorage.getItem('StudentId')")
             if local_storage:
-                return local_storage.strip()
+                student_id = local_storage.strip()
+                # Save the student ID for future use
+                try:
+                    with open(STUDENT_ID_FILE, 'w') as f:
+                        json.dump({'student_id': student_id}, f)
+                    logger.info(f"Saved student ID to file: {student_id}")
+                except Exception as e:
+                    logger.error(f"Error saving student ID to file: {e}")
+                return student_id
         except Exception:
             pass
             
@@ -886,7 +749,15 @@ async def get_student_id(page):
         }""")
         
         if student_id:
-            return student_id.strip()
+            student_id = student_id.strip()
+            # Save the student ID for future use
+            try:
+                with open(STUDENT_ID_FILE, 'w') as f:
+                    json.dump({'student_id': student_id}, f)
+                logger.info(f"Saved student ID to file: {student_id}")
+            except Exception as e:
+                logger.error(f"Error saving student ID to file: {e}")
+            return student_id
             
         # Try to find it in script tags or function calls
         content = await page.content()
@@ -894,13 +765,29 @@ async def get_student_id(page):
         # Look for MyUpdate function call with student ID
         match = re.search(r"MyUpdate\s*\(\s*['\"](\d+)['\"].*?,.*?['\"]([a-zA-Z0-9-]+)['\"]", content)
         if match:
-            return match.group(2).strip()
+            student_id = match.group(2).strip()
+            # Save the student ID for future use
+            try:
+                with open(STUDENT_ID_FILE, 'w') as f:
+                    json.dump({'student_id': student_id}, f)
+                logger.info(f"Saved student ID to file: {student_id}")
+            except Exception as e:
+                logger.error(f"Error saving student ID to file: {e}")
+            return student_id
             
         # Look for a GUID pattern anywhere in the page
         guid_pattern = r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}"
         match = re.search(guid_pattern, content)
         if match:
-            return match.group(0).strip()
+            student_id = match.group(0).strip()
+            # Save the student ID for future use
+            try:
+                with open(STUDENT_ID_FILE, 'w') as f:
+                    json.dump({'student_id': student_id}, f)
+                logger.info(f"Saved student ID to file: {student_id}")
+            except Exception as e:
+                logger.error(f"Error saving student ID to file: {e}")
+            return student_id
             
         logger.warning("Could not extract student ID from page using any method")
         return None
@@ -908,3 +795,305 @@ async def get_student_id(page):
     except Exception as e:
         logger.error(f"Error extracting student ID: {e}")
         return None 
+
+
+@handle_errors(default_return=None, error_category="navigating_timetable")
+async def navigate_to_week(page: Page, week_offset: int = 0, max_attempts: int = 3) -> bool:
+    """
+    Navigate to a specific week in the timetable.
+    
+    Args:
+        page: Playwright page instance with already loaded timetable
+        week_offset: Week offset (0 = current week, 1 = next week, etc.)
+        max_attempts: Maximum number of navigation attempts
+        
+    Returns:
+        True if navigation succeeded, False otherwise
+    """
+    logger.info(f"Navigating to week with offset {week_offset}")
+    
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # Get required lname value for the update call
+            content = await page.content()
+            lname_value, _ = parse_dynamic_params(content)
+            
+            # Construct the week navigation JavaScript
+            js_code = f"""
+            try {{
+                const weekOffset = {week_offset};
+                const lnameValue = '{lname_value}';
+                
+                // Try the standard MyUpdate function
+                if (typeof MyUpdate === 'function') {{
+                    MyUpdate('v', weekOffset, 'udvalg.asp', lnameValue);
+                    return true;
+                }}
+                
+                // Fallback: Manual update using direct form submission
+                const form = document.createElement('form');
+                form.method = 'post';
+                form.action = 'udvalg.asp';
+                
+                const vInput = document.createElement('input');
+                vInput.type = 'hidden';
+                vInput.name = 'v';
+                vInput.value = weekOffset;
+                form.appendChild(vInput);
+                
+                const lnameInput = document.createElement('input');
+                lnameInput.type = 'hidden';
+                lnameInput.name = 'lname';
+                lnameInput.value = lnameValue;
+                form.appendChild(lnameInput);
+                
+                document.body.appendChild(form);
+                form.submit();
+                return true;
+            }} catch (error) {{
+                console.error('Week navigation error:', error);
+                return false;
+            }}
+            """
+            
+            # Execute the JavaScript for navigation
+            result = await evaluate_js_safely(
+                page, 
+                js_code, 
+                error_message=f"Navigation to week {week_offset} failed (attempt {attempt})",
+                error_category="week_navigation",
+                reraise=False
+            )
+            
+            if result:
+                # Wait for navigation to complete
+                try:
+                    # Load event marks page load completion
+                    await page.wait_for_load_state("load", timeout=10000)
+                    
+                    # Additional check: verify that the week has changed by looking for updated content
+                    updated = await page.wait_for_selector(".time_8_16", timeout=5000)
+                    if updated:
+                        logger.info(f"Successfully navigated to week with offset {week_offset}")
+                        return True
+                except Exception as nav_e:
+                    logger.warning(f"Navigation wait error (attempt {attempt}): {nav_e}")
+            
+            # Sleep before retrying
+            if attempt < max_attempts:
+                logger.warning(f"Week navigation attempt {attempt} failed, retrying...")
+                await asyncio.sleep(1)  # Short delay before retry
+                
+        except Exception as e:
+            logger.error(f"Error navigating to week {week_offset} (attempt {attempt}): {e}")
+            if attempt < max_attempts:
+                await asyncio.sleep(1)
+    
+    logger.error(f"Failed to navigate to week {week_offset} after {max_attempts} attempts")
+    return False
+
+
+@handle_errors(default_return=None, error_category="extracting_student_data")
+async def extract_student_info(page: Page) -> Dict[str, Any]:
+    """
+    Extract student information from the page after login.
+    
+    Args:
+        page: Playwright page instance after successful login
+        
+    Returns:
+        Dictionary with student information
+    """
+    logger.info("Extracting student information...")
+    
+    try:
+        # Wait for the page to stabilize
+        await page.wait_for_load_state("networkidle", timeout=5000)
+        
+        # Extract student ID and dynamic parameters
+        student_id = await get_student_id(page)
+        
+        content = await page.content()
+        lname_value, timer_value = parse_dynamic_params(content)
+        
+        # Extract student name from the page
+        student_name = await page.evaluate("""() => {
+            // Try to find name in welcome text first
+            const welcomeElement = document.querySelector('.welcome');
+            if (welcomeElement) {
+                const nameMatch = welcomeElement.textContent.match(/Vælkomin\s+(.+?)\s*!/i);
+                if (nameMatch) return nameMatch[1].trim();
+            }
+            
+            // Try other possible elements
+            const possibleSelectors = [
+                '.student-name', 
+                '.user-info',
+                'h1', 
+                '.header-content'
+            ];
+            
+            for (const selector of possibleSelectors) {
+                const element = document.querySelector(selector);
+                if (element && element.textContent.trim()) {
+                    return element.textContent.trim();
+                }
+            }
+            
+            return null;
+        }""")
+        
+        result = {
+            "student_id": student_id,
+            "student_name": student_name,
+            "lname_value": lname_value,
+            "timer_value": timer_value
+        }
+        
+        logger.info(f"Extracted student info: {result}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error extracting student info: {e}")
+        return {
+            "student_id": None,
+            "student_name": None,
+            "lname_value": None,
+            "timer_value": None
+        }
+
+
+@handle_errors(default_return=None, error_category="navigating_lesson_page")
+async def navigate_to_note_page(page: Page, lesson_id: str) -> bool:
+    """
+    Navigate to the note page for a specific lesson.
+    
+    Args:
+        page: Playwright page instance with already loaded timetable
+        lesson_id: ID of the lesson to navigate to
+        
+    Returns:
+        True if navigation succeeded, False otherwise
+    """
+    logger.info(f"Navigating to note page for lesson {lesson_id}")
+    
+    try:
+        # Get required lname value for the update call
+        content = await page.content()
+        lname_value, _ = parse_dynamic_params(content)
+        
+        # Construct the navigation JavaScript
+        js_code = f"""
+        try {{
+            const lessonId = '{lesson_id}';
+            const lnameValue = '{lname_value}';
+            
+            // Try the standard MyUpdate function
+            if (typeof MyUpdate === 'function') {{
+                MyUpdate('q', lessonId, 'note.asp', lnameValue);
+                return true;
+            }}
+            
+            // Fallback: Manual update using direct form submission
+            const form = document.createElement('form');
+            form.method = 'post';
+            form.action = 'note.asp';
+            
+            const qInput = document.createElement('input');
+            qInput.type = 'hidden';
+            qInput.name = 'q';
+            qInput.value = lessonId;
+            form.appendChild(qInput);
+            
+            const lnameInput = document.createElement('input');
+            lnameInput.type = 'hidden';
+            lnameInput.name = 'lname';
+            lnameInput.value = lnameValue;
+            form.appendChild(lnameInput);
+            
+            document.body.appendChild(form);
+            form.submit();
+            return true;
+        }} catch (error) {{
+            console.error('Lesson navigation error:', error);
+            return false;
+        }}
+        """
+        
+        # Execute the JavaScript for navigation
+        result = await evaluate_js_safely(
+            page, 
+            js_code, 
+            error_message=f"Navigation to lesson {lesson_id} failed",
+            error_category="lesson_navigation",
+            reraise=False
+        )
+        
+        if result:
+            # Wait for navigation to complete
+            try:
+                # Load event marks page load completion
+                await page.wait_for_load_state("load", timeout=10000)
+                
+                # Additional check: verify the content has loaded
+                note_form = await page.wait_for_selector("form[name='NotesForm']", timeout=5000)
+                if note_form:
+                    logger.info(f"Successfully navigated to note page for lesson {lesson_id}")
+                    return True
+            except Exception as nav_e:
+                logger.warning(f"Note page navigation wait error: {nav_e}")
+        
+        logger.error(f"Failed to navigate to note page for lesson {lesson_id}")
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error navigating to note page: {e}")
+        return False
+
+
+@handle_errors(default_return=None, error_category="submitting_note")
+async def submit_note(page: Page, lesson_id: str, note_text: str) -> bool:
+    """
+    Submit a note for a specific lesson.
+    
+    Args:
+        page: Playwright page instance with already loaded note page
+        lesson_id: ID of the lesson
+        note_text: Text of the note to submit
+        
+    Returns:
+        True if submission succeeded, False otherwise
+    """
+    logger.info(f"Submitting note for lesson {lesson_id}")
+    
+    try:
+        # Get required lname and timer values for the form submission
+        content = await page.content()
+        lname_value, timer_value = parse_dynamic_params(content)
+        
+        # Check if we have a NotesForm
+        notes_form = await page.query_selector("form[name='NotesForm']")
+        if not notes_form:
+            logger.error("Note form not found on the page")
+            return False
+            
+        # Fill note text in textarea
+        note_textarea = await page.query_selector("textarea[name='note']")
+        if note_textarea:
+            await note_textarea.fill(note_text)
+            
+            # Submit the form
+            await page.click("input[type='submit']")
+            
+            # Wait for submission to complete
+            await page.wait_for_load_state("networkidle", timeout=5000)
+            
+            logger.info(f"Successfully submitted note for lesson {lesson_id}")
+            return True
+        else:
+            logger.error("Note textarea not found on the page")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error submitting note: {e}")
+        return False 

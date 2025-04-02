@@ -73,50 +73,62 @@ def parse_teacher_map_html_response(html_content: str) -> Dict[str, str]:
     soup = BeautifulSoup(html_content, "lxml")
     teacher_map = {}
 
-    # Find the select element containing teacher options
-    # Adjust selector if the ID or structure changes
-    select_element = soup.find("select") # Assuming there's only one relevant select
-    if not select_element:
-        # Try finding by a known name attribute if ID is unreliable
-        select_element = soup.find("select", {"name": "laerer"}) # Example name
+    try:
+        # First try the traditional select element approach
+        # Find the select element containing teacher options
+        select_element = soup.find("select")  # Assuming there's only one relevant select
         if not select_element:
-            logger.error("Could not find the select element containing teacher options in HTML.")
-            raise GlasirScrapingError("Teacher select element not found in HTML response.")
+            # Try finding by a known name attribute if ID is unreliable
+            select_element = soup.find("select", {"name": "laerer"})  # Example name
+            if not select_element:
+                logger.warning("Could not find the select element containing teacher options in HTML. Trying alternative extraction method.")
+                # Instead of raising an error, try the alternative approach
+                raise ValueError("Select element not found")
 
+        options = select_element.find_all("option")
+        if not options:
+            logger.warning("No teacher <option> tags found within the select element. Trying alternative extraction method.")
+            raise ValueError("No options found in select element")
 
-    options = select_element.find_all("option")
-    if not options:
-        logger.warning("No teacher <option> tags found within the select element.")
-        return {} # No teachers listed
+        for option in options:
+            if isinstance(option, Tag):
+                initials = option.get("value")
+                full_name = option.get_text(strip=True)
 
-    for option in options:
-        if isinstance(option, Tag):
-            initials = option.get("value")
-            full_name = option.get_text(strip=True)
+                # Basic validation and cleanup
+                if initials and full_name and initials != "-1":  # Skip placeholder values
+                    # Sometimes the name might contain the initials e.g., "ABC - Anders B. Christensen"
+                    # Attempt to clean this up
+                    if f"{initials} -" in full_name:
+                        cleaned_name = full_name.split(f"{initials} -", 1)[-1].strip()
+                        if cleaned_name:  # Use cleaned name only if it's not empty
+                            full_name = cleaned_name
+                        else:  # If cleaning results in empty, keep original (edge case)
+                            logger.debug(f"Cleaning resulted in empty name for initials {initials}, keeping original: {full_name}")
 
-            # Basic validation and cleanup
-            if initials and full_name and initials != "-1": # Skip placeholder values
-                 # Sometimes the name might contain the initials e.g., "ABC - Anders B. Christensen"
-                 # Attempt to clean this up
-                 if f"{initials} -" in full_name:
-                     cleaned_name = full_name.split(f"{initials} -", 1)[-1].strip()
-                     if cleaned_name: # Use cleaned name only if it's not empty
-                         full_name = cleaned_name
-                     else: # If cleaning results in empty, keep original (edge case)
-                          logger.debug(f"Cleaning resulted in empty name for initials {initials}, keeping original: {full_name}")
+                    # Further cleanup: Remove potential "(initials)" suffix if present
+                    if full_name.endswith(f"({initials})"):
+                        full_name = full_name[:-len(f"({initials})")].strip()
 
-                 # Further cleanup: Remove potential "(initials)" suffix if present
-                 if full_name.endswith(f"({initials})"):
-                     full_name = full_name[:-len(f"({initials})")].strip()
+                    if initials in teacher_map and teacher_map[initials] != full_name:
+                        logger.warning(f"Duplicate teacher initials '{initials}' found with different names: '{teacher_map[initials]}' vs '{full_name}'. Keeping the latter.")
+                    teacher_map[initials] = full_name
 
-                 if initials in teacher_map and teacher_map[initials] != full_name:
-                      logger.warning(f"Duplicate teacher initials '{initials}' found with different names: '{teacher_map[initials]}' vs '{full_name}'. Keeping the latter.")
-                 teacher_map[initials] = full_name
+        if not teacher_map:
+            logger.warning("Parsed teacher map HTML but extracted no valid teacher entries. Trying alternative extraction method.")
+            raise ValueError("No teachers extracted from select element")
+        else:
+            logger.info(f"Successfully parsed {len(teacher_map)} teachers from HTML select element.")
 
-    if not teacher_map:
-         logger.warning("Parsed teacher map HTML but extracted no valid teacher entries.")
-    else:
-         logger.debug(f"Successfully parsed {len(teacher_map)} teachers from HTML.")
+    except (ValueError, GlasirScrapingError):
+        # If the select element approach fails, try the alternative regex-based approach
+        logger.info("Trying alternative teacher extraction method using regex patterns.")
+        teacher_map = extract_teachers_from_html(html_content)
+        
+        if not teacher_map:
+            logger.warning("Alternative extraction method also failed to extract teacher information.")
+        else:
+            logger.info(f"Successfully extracted {len(teacher_map)} teachers using alternative method.")
 
     return teacher_map
 
@@ -520,7 +532,7 @@ async def navigate_to_teachers_page(page):
         logger.error(f"Error navigating to teachers page: {e}")
         return None
 
-async def extract_teachers_from_html(html_content):
+def extract_teachers_from_html(html_content):
     """
     Extract teacher information directly from HTML content.
     Useful when you have the teacher HTML directly without needing navigation.
@@ -533,24 +545,47 @@ async def extract_teachers_from_html(html_content):
     """
     teacher_map = {}
     
-    # Pattern 1: For links with onclick attributes: Name (<a...>XXX</a>)
-    pattern1 = r'([^<>]+?)\s*\(\s*<a [^>]*?onclick="[^"]*?teach([A-Z]{2,4})[^"]*?"[^>]*?>([A-Z]{2,4})</a>\s*\)'
-    matches = re.findall(pattern1, html_content)
+    # Exact pattern for the table HTML structure shown in the example:
+    # Format: Name (<a href=# onclick="MyUpdate('/i/udvalg.asp', 'teachXXX'+'&v=0&id=XXX' , 'MyWindowMain')">XXX</a>)
+    pattern = r'([^<>]+?)\s*\(\s*<a href=# onclick="MyUpdate\(\'\/i\/udvalg\.asp\', \'teach([A-Z]{2,4})\'[^>]*?>([A-Z]{2,4})</a>\s*\)'
+    matches = re.findall(pattern, html_content)
     
     for match in matches:
         full_name = match[0].strip()
         initials = match[2].strip()  # Use the visible initials (within the <a> tag)
-        teacher_map[initials] = full_name  # Store only the name without appending initials
+        teacher_map[initials] = full_name
     
-    # Pattern 2: Simpler fallback pattern: Name (XXX)
+    # If the exact pattern didn't work, try a more general one
     if len(teacher_map) < 10:
-        pattern2 = r'([^<>]+?)\s*\(\s*([A-Z]{2,4})\s*\)'
+        pattern2 = r'([^<>]+?)\s*\(\s*<a [^>]*?onclick="[^"]*?\'teach([A-Z]{2,4})\'[^"]*?"[^>]*?>([A-Z]{2,4})</a>\s*\)'
         matches = re.findall(pattern2, html_content)
         
         for match in matches:
             full_name = match[0].strip()
+            initials = match[2].strip()
+            if initials not in teacher_map:
+                teacher_map[initials] = full_name
+    
+    # If still not enough, try with a simpler pattern
+    if len(teacher_map) < 10:
+        pattern3 = r'([^<>]+?)\s*\(\s*<a [^>]*?>([A-Z]{2,4})</a>\s*\)'
+        matches = re.findall(pattern3, html_content)
+        
+        for match in matches:
+            full_name = match[0].strip()
             initials = match[1].strip()
-            if initials not in teacher_map:  # Only add if not already present
-                teacher_map[initials] = full_name  # Store only the name without appending initials
+            if initials not in teacher_map:
+                teacher_map[initials] = full_name
+    
+    # Fallback pattern for simple Name (XXX) format without links
+    if len(teacher_map) < 10:
+        pattern4 = r'([^<>]+?)\s*\(\s*([A-Z]{2,4})\s*\)'
+        matches = re.findall(pattern4, html_content)
+        
+        for match in matches:
+            full_name = match[0].strip()
+            initials = match[1].strip()
+            if initials not in teacher_map:
+                teacher_map[initials] = full_name
     
     return teacher_map 

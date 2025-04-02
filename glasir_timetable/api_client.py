@@ -10,7 +10,7 @@ import random
 import logging
 import httpx
 import asyncio
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from urllib.parse import urlencode
 from bs4 import BeautifulSoup
 import re
@@ -24,62 +24,19 @@ from playwright.async_api import Page
 from glasir_timetable import logger
 from glasir_timetable.extractors.homework_parser import clean_homework_text, parse_homework_html_response_structured
 from glasir_timetable.extractors.teacher_map import parse_teacher_map_html_response
-from .session import AuthSessionManager, get_dynamic_session_params
+from .session import AuthSessionManager
 from .utils.error_utils import handle_errors, GlasirScrapingError
+from .utils.param_utils import parse_dynamic_params
 from .constants import (
     GLASIR_BASE_URL,
     DEFAULT_HEADERS,
     NOTE_ASP_URL,
     TEACHER_MAP_URL,
     TIMETABLE_INFO_URL,
+    TEACHER_CACHE_FILE,
 )
 
 logger = logging.getLogger(__name__)
-
-async def extract_lname_from_page(page) -> Optional[str]:
-    """
-    Dynamically extract the lname value from the MyUpdate function on the page.
-    
-    Args:
-        page: Playwright page object with access to the loaded timetable
-        
-    Returns:
-        String containing the lname value in the format "Ford#####,##", or None if not found
-        
-    Note:
-        This function is deprecated. Use get_dynamic_session_params from session module instead.
-    """
-    logger.warning("extract_lname_from_page is deprecated, use get_dynamic_session_params instead")
-    try:
-        lname, _ = await get_dynamic_session_params(page)
-        return lname
-    except Exception as e:
-        logger.error(f"Error in extract_lname_from_page: {e}")
-        return None
-
-async def extract_timer_value_from_page(page) -> Optional[int]:
-    """
-    Extract the timer value used in the MyUpdate function.
-    
-    Args:
-        page: Playwright page object with access to the loaded timetable
-        
-    Returns:
-        Integer timer value or None if not found
-        
-    Note:
-        This function is deprecated. Use get_dynamic_session_params from session module instead.
-    """
-    logger.warning("extract_timer_value_from_page is deprecated, use get_dynamic_session_params instead")
-    try:
-        _, timer = await get_dynamic_session_params(page)
-        return timer
-    except Exception as e:
-        logger.error(f"Error in extract_timer_value_from_page: {e}")
-        # Return a fallback value
-        fallback = int(time.time() * 1000)
-        logger.warning(f"Using fallback value due to error: {fallback}")
-        return fallback
 
 async def fetch_homework_for_lesson(
     cookies: Dict[str, str],
@@ -101,8 +58,8 @@ async def fetch_homework_for_lesson(
         HTML string containing the homework data, or None on error
     """
     try:
-        base_url = "https://tg.glasir.fo"
-        api_url = f"{base_url}/i/note.asp"
+        # Use constants instead of hardcoded URLs
+        api_url = NOTE_ASP_URL
         
         # Get timer value if not provided
         if timer_value is None:
@@ -122,17 +79,43 @@ async def fetch_homework_for_lesson(
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Content-Type": "application/x-www-form-urlencoded",
-            "Referer": f"{base_url}/132n/"
+            "Referer": f"{GLASIR_BASE_URL}/132n/"
         }
         
-        async with httpx.AsyncClient(cookies=cookies, headers=headers, follow_redirects=True, timeout=30.0) as client:
-            response = await client.post(api_url, data=params)
-            response.raise_for_status()
-            
-            if not response.text:
-                logger.warning("Empty response received")
+        # Create a more robust HTTP client with appropriate settings
+        async with httpx.AsyncClient(
+            cookies=cookies, 
+            headers=headers, 
+            follow_redirects=True, 
+            timeout=30.0,
+            verify=True      # Verify SSL certificates
+        ) as client:
+            # Add DNS resolution check
+            try:
+                # Attempt to resolve the hostname manually first
+                domain = GLASIR_BASE_URL.split("//")[1].split("/")[0]
+                import socket
+                socket.gethostbyname(domain)
+            except socket.gaierror:
+                logger.error(f"DNS resolution failed for {domain}. Please check your network connection or DNS configuration.")
+                return None
                 
-            return response.text
+            try:
+                response = await client.post(api_url, data=params)
+                response.raise_for_status()
+                
+                if not response.text:
+                    logger.warning("Empty response received")
+                    
+                return response.text
+            except httpx.ConnectError as e:
+                logger.error(f"Connection error for {api_url}: {e}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                return None
+            except httpx.HTTPStatusError as e:
+                logger.error(f"HTTP error {e.response.status_code} for {api_url}: {e}")
+                return None
     except Exception as e:
         logger.error(f"Error fetching homework for lesson {lesson_id}: {e}")
         import traceback
@@ -401,21 +384,15 @@ async def fetch_homework_with_retry(
     max_retries: int = 2
 ) -> Optional[str]:
     """
-    Fetch homework for a lesson with retry and re-authentication logic.
-    
-    This function will first attempt to fetch homework using the provided cookies.
-    If that fails with a specific type of error (like DNS resolution), it will:
-    1. Re-authenticate using auth_service
-    2. Extract fresh lname_value and timer_value
-    3. Retry the homework fetch with the new credentials
+    Fetch homework with automatic retry and re-authentication on failure.
     
     Args:
-        cookies: Dictionary of cookies from the current browser session
+        cookies: Dictionary of cookies from the browser session
         lesson_id: The ID of the lesson to fetch homework for
-        page: The Playwright page object (needed for re-authentication)
-        auth_service: AuthenticationService instance for re-login
-        username: Username for re-authentication
-        password: Password for re-authentication
+        page: Playwright page object for re-authentication (optional)
+        auth_service: Authentication service for refreshing cookies (optional)
+        username: Username for re-authentication (optional)
+        password: Password for re-authentication (optional)
         lname_value: Optional dynamically extracted lname value
         timer_value: Optional timer value extracted from the page
         max_retries: Maximum number of retry attempts (default: 2)
@@ -423,8 +400,23 @@ async def fetch_homework_with_retry(
     Returns:
         HTML string containing the homework data, or None on error
     """
+    retry_count = 0
+    retry_needed = True
+    result = None
+    
     # First attempt with existing cookies
     try:
+        # Verify DNS resolution first
+        try:
+            domain = GLASIR_BASE_URL.split("//")[1].split("/")[0]
+            import socket
+            socket.gethostbyname(domain)
+        except socket.gaierror as e:
+            logger.error(f"DNS resolution failed for {domain}: {e}")
+            # If DNS resolution fails, we should signal that retry isn't going to help
+            # because it's likely a network configuration issue
+            return None
+            
         result = await fetch_homework_for_lesson(
             cookies, lesson_id, lname_value, timer_value
         )
@@ -433,7 +425,7 @@ async def fetch_homework_with_retry(
     except Exception as e:
         # Check if it's a DNS resolution error or other connection-related issue
         is_dns_error = "[Errno 8] nodename nor servname provided, or not known" in str(e)
-        is_connection_error = "ConnectionError" in str(e) or "Connection refused" in str(e)
+        is_connection_error = isinstance(e, httpx.ConnectError) or "ConnectionError" in str(e) or "Connection refused" in str(e)
         
         if not (is_dns_error or is_connection_error):
             # If it's some other error, just raise it
@@ -446,39 +438,43 @@ async def fetch_homework_with_retry(
         if not all([page, auth_service, username, password]):
             logger.error("Cannot retry with re-authentication: missing required parameters")
             return None
+    
+    # If we didn't get a successful result, try re-authenticating and retrying
+    while retry_needed and retry_count < max_retries:
+        retry_count += 1
         
-        # Retry with re-authentication
-        for retry in range(max_retries):
-            try:
-                logger.info(f"Retry attempt {retry+1}/{max_retries} with re-authentication")
-                
-                # Re-authenticate
-                login_success = await auth_service.login(username, password, page)
-                if not login_success:
-                    logger.error("Re-authentication failed")
-                    continue
-                
-                # Get fresh cookies from the page context
-                fresh_cookies = await page.context.cookies()
-                cookies_dict = {cookie['name']: cookie['value'] for cookie in fresh_cookies}
-                
-                # Extract fresh lname value and timer value
-                fresh_lname = await extract_lname_from_page(page)
-                fresh_timer = await extract_timer_value_from_page(page)
-                
-                # Retry the fetch with fresh values
-                result = await fetch_homework_for_lesson(
-                    cookies_dict, lesson_id, fresh_lname, fresh_timer
-                )
-                
-                if result:
-                    logger.info(f"Successfully fetched homework after re-authentication")
-                    return result
-                    
-            except Exception as retry_e:
-                logger.error(f"Error during retry {retry+1}: {retry_e}")
-                
-    return None
+        try:
+            logger.info(f"Retry attempt {retry_count}/{max_retries} with re-authentication")
+            
+            # Re-authenticate using the provided authentication service
+            await auth_service.authenticate(username, password, page)
+            
+            # Get fresh cookies after re-authentication
+            new_cookies = await auth_service.get_cookies()
+            
+            # Get fresh lname and timer values from page content
+            content = await page.content()
+            new_lname, new_timer = parse_dynamic_params(content)
+            logger.info(f"Re-fetched dynamic parameters: lname={new_lname}, timer={new_timer}")
+            
+            # Try again with the fresh cookies and parameters
+            result = await fetch_homework_for_lesson(
+                new_cookies, lesson_id, new_lname, new_timer
+            )
+            
+            if result:
+                logger.info(f"Successfully fetched homework for lesson {lesson_id} after {retry_count} retries")
+                retry_needed = False
+                return result
+            else:
+                logger.warning(f"Retry {retry_count}/{max_retries} failed: Empty or invalid response")
+        except Exception as retry_e:
+            logger.error(f"Error during retry {retry_count}/{max_retries}: {retry_e}")
+    
+    if retry_count >= max_retries:
+        logger.error(f"Failed to fetch homework after {max_retries} retry attempts")
+        
+    return result
 
 async def fetch_homework_for_lessons_with_retry(
     cookies: Dict[str, str],
@@ -489,31 +485,44 @@ async def fetch_homework_for_lessons_with_retry(
     password: str = None,
     max_concurrent: int = 10,
     lname_value: str = None,
-    timer_value: int = None
+    timer_value: int = None,
+    max_retries: int = 2
 ) -> Dict[str, str]:
     """
-    Fetch homework for multiple lessons with retry and re-authentication logic.
+    Fetch homework for multiple lessons with retry and re-authentication.
     
     Args:
-        cookies: Dictionary of cookies from the current browser session
+        cookies: Dictionary of cookies from the browser session
         lesson_ids: List of lesson IDs to fetch homework for
-        page: The Playwright page object (needed for re-authentication)
-        auth_service: AuthenticationService instance for re-login
-        username: Username for re-authentication
-        password: Password for re-authentication
-        max_concurrent: Maximum number of concurrent requests
+        page: Playwright page object for re-authentication (optional)
+        auth_service: Authentication service for refreshing cookies (optional)
+        username: Username for re-authentication (optional)
+        password: Password for re-authentication (optional)
+        max_concurrent: Maximum number of concurrent requests (default: 10)
         lname_value: Optional dynamically extracted lname value
         timer_value: Optional timer value extracted from the page
+        max_retries: Maximum number of retry attempts (default: 2)
         
     Returns:
         Dictionary mapping lesson IDs to their homework content
     """
     if not lesson_ids:
         return {}
-    
+        
     results = {}
+    retry_count = 0
     retry_needed = False
-    retry_auth_performed = False
+    
+    # Verify DNS resolution first
+    try:
+        domain = GLASIR_BASE_URL.split("//")[1].split("/")[0]
+        import socket
+        socket.gethostbyname(domain)
+    except socket.gaierror as e:
+        logger.error(f"DNS resolution failed for {domain}: {e}")
+        # If DNS resolution fails, we should return empty results
+        # because it's likely a network configuration issue
+        return results
     
     try:
         # Try the normal parallel fetch first
@@ -533,7 +542,7 @@ async def fetch_homework_for_lessons_with_retry(
     except Exception as e:
         # Check if it's a connection-related error
         is_dns_error = "[Errno 8] nodename nor servname provided, or not known" in str(e)
-        is_connection_error = "ConnectionError" in str(e) or "Connection refused" in str(e)
+        is_connection_error = isinstance(e, httpx.ConnectError) or "ConnectionError" in str(e) or "Connection refused" in str(e)
         
         if is_dns_error or is_connection_error:
             logger.warning(f"Connection error during batch homework fetch: {e}")
@@ -541,41 +550,52 @@ async def fetch_homework_for_lessons_with_retry(
         else:
             logger.error(f"Error during batch homework fetch: {e}")
             return results  # Return whatever we might have gathered before the error
-    
-    # If we need to retry and have the means to re-authenticate
+            
+    # If we don't have all results and can retry (and have what we need for re-auth)
     if retry_needed and all([page, auth_service, username, password]):
-        try:
-            if not retry_auth_performed:
-                logger.info("Re-authenticating before retrying failed lessons")
+        while retry_needed and retry_count < max_retries:
+            retry_count += 1
+            
+            try:
+                logger.info(f"Batch retry attempt {retry_count}/{max_retries} with re-authentication")
                 
-                # Re-authenticate
-                login_success = await auth_service.login(username, password, page)
-                if not login_success:
-                    logger.error("Re-authentication failed")
-                    return results
+                # Re-authenticate using the provided authentication service
+                await auth_service.authenticate(username, password, page)
                 
-                # Get fresh cookies from the page context
-                fresh_cookies = await page.context.cookies()
-                cookies_dict = {cookie['name']: cookie['value'] for cookie in fresh_cookies}
+                # Get fresh cookies after re-authentication
+                new_cookies = await auth_service.get_cookies()
                 
-                # Extract fresh lname value and timer value
-                fresh_lname = await extract_lname_from_page(page)
-                fresh_timer = await extract_timer_value_from_page(page)
+                # Get fresh lname and timer values from page content
+                content = await page.content()
+                new_lname, new_timer = parse_dynamic_params(content)
+                logger.info(f"Re-fetched dynamic parameters: lname={new_lname}, timer={new_timer}")
                 
-                retry_auth_performed = True
-                
-                # Try again with fresh values
+                # Try again with the fresh cookies and parameters (only for missing lesson_ids)
                 retry_results = await fetch_homework_for_lessons(
-                    cookies_dict, lesson_ids, max_concurrent, fresh_lname, fresh_timer
+                    new_cookies, lesson_ids, max_concurrent, new_lname, new_timer
                 )
                 
-                if retry_results:
-                    # Merge the results
-                    results.update(retry_results)
-        except Exception as retry_e:
-            logger.error(f"Error during retry with re-authentication: {retry_e}")
-    
-    return results 
+                # Merge the new results with the existing ones
+                results.update(retry_results)
+                
+                # Update the list of missing lessons for the next retry if needed
+                if retry_results and len(retry_results) > 0:
+                    lesson_ids = [lesson_id for lesson_id in lesson_ids if lesson_id not in retry_results]
+                    
+                # If we got all lessons, we're done
+                if not lesson_ids:
+                    logger.info(f"Successfully fetched all remaining homework after {retry_count} retries")
+                    retry_needed = False
+                    break
+                else:
+                    logger.warning(f"Retry {retry_count}/{max_retries} fetched {len(retry_results)} lessons, {len(lesson_ids)} remaining")
+            except Exception as retry_e:
+                logger.error(f"Error during batch retry {retry_count}/{max_retries}: {retry_e}")
+        
+        if retry_count >= max_retries and lesson_ids:
+            logger.error(f"Failed to fetch all homework after {max_retries} retry attempts. Missing {len(lesson_ids)} lessons.")
+            
+    return results
 
 async def fetch_teacher_mapping(
     cookies: Dict[str, str],
@@ -594,8 +614,8 @@ async def fetch_teacher_mapping(
         Dictionary mapping teacher initials to full names
     """
     try:
-        base_url = "https://tg.glasir.fo"
-        api_url = f"{base_url}/i/teachers.asp"
+        # Use constants instead of hardcoded URLs
+        api_url = TEACHER_MAP_URL
         
         # Get timer value if not provided
         if timer_value is None:
@@ -616,7 +636,7 @@ async def fetch_teacher_mapping(
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Content-Type": "application/x-www-form-urlencoded",
-            "Referer": f"{base_url}/132n/"
+            "Referer": f"{GLASIR_BASE_URL}/132n/"
         }
         
         async with httpx.AsyncClient(cookies=cookies, headers=headers, follow_redirects=True, timeout=30.0) as client:
@@ -709,13 +729,13 @@ async def fetch_weeks_data(
         # Use the parameter format observed in the HAR file
         params = {
             "fname": "Henry",
-            "timex": timer_value,
-            "rnd": random.random(),
+            "timex": str(timer_value),
+            "rnd": str(random.random()),
             "MyInsertAreaId": "MyWindowMain",
             "lname": lname_value if lname_value else "Ford28731,48",
             "q": "stude",
             "id": student_id,
-            "v": v_override if v_override is not None else "-1"  # Use override value if provided
+            "v": v_override if v_override is not None else "0"  # Use v_override if provided, otherwise default to 0
         }
         
         headers = {
@@ -898,61 +918,87 @@ async def fetch_timetable_for_week(
     timer_value: int = None
 ) -> Optional[str]:
     """
-    Fetch the timetable HTML for a specific week using the udvalg.asp endpoint.
+    Fetch the timetable HTML for a specific week offset using the direct API.
     
     Args:
-        cookies: Dictionary of cookies from the current browser session
-        student_id: The student ID (GUID) for the current user
-        week_offset: Offset from the current week (-1 for previous week, etc.)
+        cookies: Dictionary of cookies from the browser session
+        student_id: The student ID to fetch the timetable for
+        week_offset: The week offset (0 = current week, 1 = next week, etc.)
         lname_value: Optional dynamically extracted lname value
         timer_value: Optional timer value extracted from the page
         
     Returns:
-        HTML string containing the timetable, or None on error
+        The HTML content of the timetable response, or None if the request fails
     """
     try:
-        base_url = "https://tg.glasir.fo"
-        api_url = f"{base_url}/i/udvalg.asp"
+        # Use the correct URL from constants
+        api_url = TIMETABLE_INFO_URL
         
-        # Get timer value if not provided
         if timer_value is None:
             timer_value = int(time.time() * 1000)
             
-        # Use the parameter format observed in the HAR file
+        # Important: Must use MyUpdate-compatible parameters
+        logger.info(f"Fetching timetable for week offset {week_offset} with lname={lname_value}")
+        
+        # Format parameters according to the MyUpdate function we observed
         params = {
             "fname": "Henry",
-            "timex": timer_value,
-            "rnd": random.random(),
+            "timex": str(timer_value),
+            "rnd": str(random.random()),
             "MyInsertAreaId": "MyWindowMain",
-            "lname": lname_value if lname_value else "Ford28731,48",
+            "lname": lname_value if lname_value else "Ford62860,32",
             "q": "stude",
             "id": student_id,
-            "v": str(week_offset)  # Convert to string as seen in the HAR file
+            "v": str(week_offset)  # Format v and id as separate parameters as observed in the actual request
         }
         
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Content-Type": "application/x-www-form-urlencoded",
-            "Referer": f"{base_url}/132n/"
+            "Referer": f"{GLASIR_BASE_URL}/132n/"
         }
         
-        logger.info(f"Fetching timetable for week offset {week_offset} with lname={lname_value}")
-        
-        async with httpx.AsyncClient(cookies=cookies, headers=headers, follow_redirects=True, timeout=30.0) as client:
-            response = await client.post(api_url, data=params)
-            response.raise_for_status()
-            
-            if not response.text:
-                logger.warning("Empty response received from timetable request")
+        # Create a more robust HTTP client with appropriate settings
+        async with httpx.AsyncClient(
+            cookies=cookies, 
+            headers=headers, 
+            follow_redirects=True, 
+            timeout=30.0,
+            verify=True      # Verify SSL certificates
+        ) as client:
+            # Add DNS resolution check
+            try:
+                # Attempt to resolve the hostname manually first
+                domain = GLASIR_BASE_URL.split("//")[1].split("/")[0]
+                import socket
+                socket.gethostbyname(domain)
+            except socket.gaierror:
+                logger.error(f"DNS resolution failed for {domain}. Please check your network connection or DNS configuration.")
                 return None
                 
-            return response.text
+            try:
+                response = await client.post(api_url, data=params)
+                response.raise_for_status()
+                
+                if not response.text:
+                    logger.warning("Empty response received from timetable request")
+                    return None
+                    
+                return response.text
+            except httpx.ConnectError as e:
+                logger.error(f"Connection error for {api_url}: {e}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                return None
+            except httpx.HTTPStatusError as e:
+                logger.error(f"HTTP error {e.response.status_code} for {api_url}: {e}")
+                return None
             
     except Exception as e:
         logger.error(f"Error fetching timetable for week {week_offset}: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
-        return None 
+        return None
 
 async def _fetch_single_timetable_with_semaphore(
     semaphore: Semaphore,
@@ -1043,6 +1089,68 @@ async def fetch_timetables_for_weeks(
              timetable_data[offset] = None # Mark as failed/not found
 
     return timetable_data 
+
+async def extract_week_range(
+    cookies: Dict[str, str],
+    student_id: str,
+    lname_value: str = None,
+    timer_value: int = None
+) -> Tuple[int, int]:
+    """
+    Extract the minimum and maximum week offsets available in the timetable using API.
+    
+    Args:
+        cookies: Dictionary of cookies from current browser session
+        student_id: The student ID (GUID) for the current user
+        lname_value: Optional dynamically extracted lname value
+        timer_value: Optional timer value extracted from the page
+        
+    Returns:
+        tuple: (min_offset, max_offset) - the earliest and latest available week offsets
+        
+    Raises:
+        ValueError: If no week offset values can be found in the API response
+    """
+    try:
+        # Fetch the current week timetable HTML
+        week_html = await fetch_timetable_for_week(
+            cookies=cookies,
+            student_id=student_id,
+            week_offset=0,  # Current week
+            lname_value=lname_value,
+            timer_value=timer_value
+        )
+        
+        if not week_html:
+            logger.error("Failed to fetch timetable HTML from API")
+            raise ValueError("Failed to extract week offset range from timetable using API. Cannot determine available weeks.")
+        
+        # Parse the HTML to extract weeks info
+        weeks_data = parse_weeks_html_response(week_html)
+        
+        # Extract offsets from the parsed weeks data
+        if not weeks_data or "weeks" not in weeks_data or not weeks_data["weeks"]:
+            logger.error("No valid weeks data found in API response")
+            raise ValueError("Failed to extract week offset range from timetable using API. No weeks data found.")
+        
+        # Get all offsets and find min/max
+        offsets = [week.get("offset", 0) for week in weeks_data["weeks"] if "offset" in week]
+        
+        if not offsets:
+            logger.error("No week offset values found in API response")
+            raise ValueError("Failed to extract week offset range from timetable using API. No offset values found.")
+        
+        min_offset = min(offsets)
+        max_offset = max(offsets)
+        
+        logger.info(f"API-extracted week offset range: {min_offset} to {max_offset}")
+        return min_offset, max_offset
+        
+    except Exception as e:
+        logger.error(f"Error extracting week range using API: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise ValueError(f"Failed to extract week offset range from timetable using API: {e}")
 
 async def get_student_id(page) -> Optional[str]:
     """
@@ -1135,30 +1243,31 @@ class ApiClient:
         self._session_manager = session_manager
         
     async def initialize_session_params(self, page: Optional[Page] = None) -> None:
-        """
-        Initialize session parameters (lname and timer) using the new minimized approach.
+        """Initialize session parameters using the provided page or a fresh request."""
+        await self._session_manager.fetch_and_cache_params(page)
+
+    # Custom backoff handler to refresh auth and parameters
+    def _on_backoff_handler(self, details):
+        exception = details.get('exception')
+        wait_time = details.get('wait', 0)
+        tries = details.get('tries', 0)
         
-        Args:
-            page: Authenticated Playwright page object
-        """
-        if page:
-            # Use the minimized extraction approach
-            lname, timer = await get_dynamic_session_params(page)
-            
-            # Update session manager with these values
-            if lname:
-                self._session_manager._lname = lname
-                self._session_manager._cached_params["lname"] = lname
-            if timer:
-                self._session_manager._timer = str(timer)  # Convert to string as expected by session manager
-                self._session_manager._cached_params["timer"] = str(timer)
-        else:
-            # Fall back to the standard fetching mechanism
-            await self._session_manager.fetch_and_cache_params()
+        # Log the backoff event
+        logger.warning(f"Retrying request in {wait_time:.1f}s after {tries} tries. Error: {exception}")
+        
+        # Check if it's a connection or auth-related error
+        is_connection_error = isinstance(exception, httpx.ConnectError)
+        is_auth_error = hasattr(exception, 'response') and exception.response and exception.response.status_code in (401, 403)
+        
+        # For connection or auth errors, trigger re-authentication
+        if is_connection_error or is_auth_error:
+            logger.warning("Connection or authentication error detected, will refresh session parameters before retry")
+            # Clear cached parameters to force refresh on next attempt
+            self._session_manager.clear_cache()
 
     @handle_errors(default_return=None, error_category="fetching_homework_details")
     @backoff.on_exception(backoff.expo,
-                          (httpx.RequestError, httpx.HTTPStatusError, GlasirScrapingError),
+                          (httpx.RequestError, httpx.HTTPStatusError, httpx.ConnectError, GlasirScrapingError),
                           max_tries=3,
                           logger=logger,
                           on_backoff=lambda details: logger.warning(f"Retrying homework fetch in {details['wait']:.1f}s after {details['tries']} tries. Error: {details['exception']}"))
@@ -1185,8 +1294,22 @@ class ApiClient:
         logger.debug(f"Fetching homework for lesson {lesson_id} with payload: {payload}")
 
         try:
+            # Create a more robust client configuration
+            client_kwargs = {
+                "timeout": 30.0
+            }
+            
+            # Verify DNS resolution first
+            try:
+                domain = GLASIR_BASE_URL.split("//")[1].split("/")[0]
+                import socket
+                socket.gethostbyname(domain)
+            except socket.gaierror as e:
+                logger.error(f"DNS resolution failed for {domain}: {e}")
+                raise httpx.ConnectError(f"DNS resolution failed: {e}")
+
             response = await self._client.post(
-                NOTE_ASP_URL, data=payload, headers=DEFAULT_HEADERS
+                NOTE_ASP_URL, data=payload, headers=DEFAULT_HEADERS, **client_kwargs
             )
             response.raise_for_status() # Check for HTTP errors
 
@@ -1212,51 +1335,52 @@ class ApiClient:
 
     @handle_errors(default_return={}, error_category="fetching_teacher_map")
     @backoff.on_exception(backoff.expo,
-                          (httpx.RequestError, httpx.HTTPStatusError, GlasirScrapingError),
+                          (httpx.RequestError, httpx.HTTPStatusError, httpx.ConnectError, GlasirScrapingError),
                           max_tries=3,
                           logger=logger,
                           on_backoff=lambda details: logger.warning(f"Retrying teacher map fetch in {details['wait']:.1f}s after {details['tries']} tries. Error: {details['exception']}"))
-    async def fetch_teacher_map(self, student_id: str) -> Dict[str, str]:
+    async def fetch_teacher_map(self, student_id: str, update_cache: bool = False) -> Dict[str, str]:
         """
-        Fetches the teacher initials to full name mapping using the laerer.asp endpoint.
+        Fetches the teacher initials to full name mapping.
+        When update_cache is True, fetches from the API and updates the cache.
+        When update_cache is False, loads directly from the cache file.
 
         Args:
-            student_id: The ID of the student.
+            student_id: The ID of the student (unused in direct extraction method).
+            update_cache: Whether to update the teacher cache (based on --teacherupdate flag).
 
         Returns:
             A dictionary mapping teacher initials to full names, or {} on failure.
         """
-        params = await self._session_manager.get_params()
-        payload = {
-            "elev": student_id, # Assuming 'elev' is the correct param
-            "lname": params["lname"],
-            "timer": params["timer"],
-        }
-        logger.debug("Fetching teacher map with payload: %s", payload)
         try:
-            response = await self._client.post(
-                TEACHER_MAP_URL, data=payload, headers=DEFAULT_HEADERS
-            )
-            response.raise_for_status()
-
-            # Delegate parsing to the extractor
-            teacher_map = parse_teacher_map_html_response(response.text)
-            logger.info(f"Successfully fetched and parsed teacher map ({len(teacher_map)} entries).")
-            return teacher_map
-
-        except httpx.RequestError as e:
-            logger.error(f"Request failed for teacher map: {e}")
-            raise GlasirScrapingError("Network error fetching teacher map") from e
-        except httpx.HTTPStatusError as e:
-             logger.error(f"HTTP error {e.response.status_code} for teacher map: {e.response.text[:200]}")
-             raise GlasirScrapingError(f"HTTP error ({e.response.status_code}) fetching teacher map") from e
+            # If not updating cache, load directly from cache file
+            if not update_cache:
+                if os.path.exists(TEACHER_CACHE_FILE):
+                    with open(TEACHER_CACHE_FILE, 'r', encoding='utf-8') as f:
+                        teacher_map = json.load(f)
+                    logger.info(f"Loaded {len(teacher_map)} teachers from cache file")
+                    return teacher_map
+                else:
+                    logger.warning(f"Teacher cache file not found: {TEACHER_CACHE_FILE}")
+                    # Fall back to fetching if cache doesn't exist
+            
+            # Only fetch from API when updating cache or if cache doesn't exist
+            from glasir_timetable.utils.teacher_api import fetch_and_extract_teachers
+            teacher_map = fetch_and_extract_teachers(update_cache=update_cache)
+            
+            if teacher_map:
+                logger.info(f"Successfully extracted {len(teacher_map)} teachers")
+                return teacher_map
+            else:
+                logger.error("Teacher data extraction failed")
+                return {}
         except Exception as e:
-            logger.exception(f"Unexpected error parsing teacher map: {e}")
-            raise GlasirScrapingError("Parsing error for teacher map") from e
+            logger.error(f"Error during teacher map extraction: {e}")
+            return {}
 
     @handle_errors(default_return=None, error_category="fetching_timetable_info")
     @backoff.on_exception(backoff.expo,
-                          (httpx.RequestError, httpx.HTTPStatusError, GlasirScrapingError),
+                          (httpx.RequestError, httpx.HTTPStatusError, httpx.ConnectError, GlasirScrapingError),
                           max_tries=3,
                           logger=logger,
                           on_backoff=lambda details: logger.warning(f"Retrying timetable info fetch in {details['wait']:.1f}s after {details['tries']} tries. Error: {details['exception']}"))
@@ -1273,16 +1397,40 @@ class ApiClient:
             A dictionary containing parsed timetable and week info, or None on failure.
         """
         params = await self._session_manager.get_params()
+        
+        # Calculate week offset based on current week/year
+        # For simplicity, we'll use a direct week offset of 0 for now
+        week_offset = 0
+        
         payload = {
-            "elev": student_id, # Assuming 'elev' is correct
-            "uge": f"{week_number:02d}{str(year)[-2:]}", # Format: WWYY
+            "fname": "Henry",
+            "timex": params["timer"],
+            "rnd": str(random.random()),
+            "MyInsertAreaId": "MyWindowMain",
             "lname": params["lname"],
-            "timer": params["timer"],
+            "q": "stude",
+            "id": student_id,
+            "v": str(week_offset)
         }
+        
         logger.debug(f"Fetching timetable info for week {week_number}/{year} with payload: {payload}")
         try:
+            # Create a more robust client configuration
+            client_kwargs = {
+                "timeout": 30.0
+            }
+            
+            # Verify DNS resolution first
+            try:
+                domain = GLASIR_BASE_URL.split("//")[1].split("/")[0]
+                import socket
+                socket.gethostbyname(domain)
+            except socket.gaierror as e:
+                logger.error(f"DNS resolution failed for {domain}: {e}")
+                raise httpx.ConnectError(f"DNS resolution failed: {e}")
+                
             response = await self._client.post(
-                TIMETABLE_INFO_URL, data=payload, headers=DEFAULT_HEADERS
+                TIMETABLE_INFO_URL, data=payload, headers=DEFAULT_HEADERS, **client_kwargs
             )
             response.raise_for_status()
 

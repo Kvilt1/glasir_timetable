@@ -25,6 +25,7 @@ from glasir_timetable.cookie_auth import (
     create_requests_session_with_cookies,
     test_cookies_with_requests
 )
+from glasir_timetable.utils.param_utils import parse_dynamic_params
 
 class AuthenticationService(abc.ABC):
     """
@@ -727,7 +728,8 @@ class PlaywrightExtractionService(ExtractionService):
         Returns:
             Optional[Homework]: Homework data if successful, None otherwise
         """
-        from glasir_timetable.api_client import fetch_homework_for_lesson, extract_lname_from_page, extract_timer_value_from_page, fetch_homework_with_retry
+        from glasir_timetable.api_client import fetch_homework_for_lesson, fetch_homework_with_retry
+        from glasir_timetable.session import get_dynamic_session_params
         
         try:
             # Get cookies for API requests
@@ -740,8 +742,7 @@ class PlaywrightExtractionService(ExtractionService):
                 return None
             
             # Extract the lname value for the API request
-            lname_value = await extract_lname_from_page(page)
-            timer_value = await extract_timer_value_from_page(page)
+            lname_value, timer_value = await get_dynamic_session_params(page)
             
             # Attempt to fetch the homework using our new retry function
             # First try to get auth service for potential retry
@@ -824,12 +825,11 @@ class PlaywrightExtractionService(ExtractionService):
             dict: Mapping of lesson IDs to homework data
         """
         from glasir_timetable.api_client import (
-            fetch_homework_for_lessons, 
-            extract_lname_from_page, 
-            extract_timer_value_from_page,
+            fetch_homework_for_lessons,
             parse_individual_lesson_response,
             fetch_homework_for_lessons_with_retry
         )
+        from glasir_timetable.session import get_dynamic_session_params
         
         results = {}
         
@@ -847,8 +847,7 @@ class PlaywrightExtractionService(ExtractionService):
                 return results
             
             # Extract the lname value for the API request
-            lname_value = await extract_lname_from_page(page)
-            timer_value = await extract_timer_value_from_page(page)
+            lname_value, timer_value = await get_dynamic_session_params(page)
             
             # Attempt to fetch the homework content for all lesson IDs in parallel
             # Try to get auth service for potential retry
@@ -930,11 +929,35 @@ class PlaywrightExtractionService(ExtractionService):
         Returns:
             dict: Student information (name, class)
         """
+        # First check if we have student info stored in a file
+        student_info_file = os.path.join("glasir_timetable", "student_info.json")
+        
+        if os.path.exists(student_info_file):
+            try:
+                with open(student_info_file, 'r', encoding='utf-8') as f:
+                    stored_info = json.load(f)
+                if stored_info and "studentName" in stored_info and "class" in stored_info:
+                    logger.info(f"Using cached student info: {stored_info}")
+                    return stored_info
+            except Exception as e:
+                logger.error(f"Error reading student info from file: {e}")
+                # Continue with extraction
+        
         try:
             from glasir_timetable.js_navigation.js_integration import extract_student_info_js
             
             # Extract student info using JavaScript
             student_info = await extract_student_info_js(page)
+            
+            # Save the successfully extracted info to file for future use
+            if student_info and "studentName" in student_info and student_info["studentName"] != "Unknown":
+                try:
+                    with open(student_info_file, 'w', encoding='utf-8') as f:
+                        json.dump(student_info, f)
+                    logger.info(f"Saved student info to file: {student_info}")
+                except Exception as e:
+                    logger.error(f"Error saving student info to file: {e}")
+            
             return student_info
         except Exception as e:
             logger.error(f"Error extracting student info: {e}")
@@ -1240,7 +1263,8 @@ class ApiExtractionService(ExtractionService):
                 return await self._fallback_extract_teacher_map(page, force_update)
             
             # Use the API client to fetch teacher map
-            teacher_map = await self._api_client.fetch_teacher_map(student_id)
+            # Pass the force_update parameter as update_cache
+            teacher_map = await self._api_client.fetch_teacher_map(student_id, update_cache=force_update)
             
             if teacher_map:
                 # Cache the result

@@ -5,10 +5,11 @@ from typing import Tuple, Optional, Dict, Any
 from playwright.async_api import Page
 from bs4 import BeautifulSoup
 import time
+import warnings
 
 from .utils.error_utils import handle_errors, GlasirScrapingError
+from .utils.param_utils import parse_dynamic_params
 from .constants import (
-    DEFAULT_LNAME_FALLBACK,
     DEFAULT_TIMER_FALLBACK,
     GLASIR_TIMETABLE_URL,
 )
@@ -33,10 +34,13 @@ TIMER_REGEX_PATTERNS = [
 LNAME_SCRIPT_PATTERN = re.compile(r"lname=([^&\"'\s]+)")
 LNAME_MYUPDATE_PATTERN = re.compile(r"xmlhttp\.send\(\"[^\"]*lname=([^&\"'\s]+)\"")
 TIMER_WINDOW_PATTERN = re.compile(r"timer\s*=\s*(\d+)")
+TIMER_MYUPDATE_PATTERN = re.compile(r"MyUpdate\s*\([^,]*,[^,]*,[^,]*,[^,]*,\s*(\d+)")
 FORD_LNAME_PATTERN = re.compile(r"lname=Ford(\d+,\d+)")
 
 async def get_dynamic_session_params(page: Page) -> Tuple[Optional[str], Optional[int]]:
     """
+    DEPRECATED: Use parse_dynamic_params from utils.param_utils instead.
+    
     Extract the essential dynamic session parameters (lname and timer) from the page content
     after authentication, minimizing JavaScript execution.
     
@@ -46,99 +50,22 @@ async def get_dynamic_session_params(page: Page) -> Tuple[Optional[str], Optiona
     Returns:
         A tuple containing (lname, timer) values. Either can be None if extraction fails.
     """
+    warnings.warn(
+        "get_dynamic_session_params is deprecated. Use parse_dynamic_params from utils.param_utils instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    
     logger.info("Extracting dynamic session parameters (lname/timer) from authenticated page...")
     
     # Get the page content once to avoid multiple requests
     try:
         content = await page.content()
+        # Use the new utility function
+        return parse_dynamic_params(content)
     except Exception as e:
         logger.error(f"Failed to get page content: {e}")
         return None, None
-    
-    # First try to extract using regex on plain HTML/JS content
-    lname = None
-    timer = None
-    
-    # Extract lname - try various patterns
-    for pattern in [LNAME_SCRIPT_PATTERN, LNAME_MYUPDATE_PATTERN, FORD_LNAME_PATTERN] + LNAME_REGEX_PATTERNS:
-        match = pattern.search(content)
-        if match:
-            lname = match.group(1)
-            logger.info(f"Found lname value using regex: {lname}")
-            break
-    
-    # Extract timer - try various patterns
-    for pattern in [TIMER_WINDOW_PATTERN] + TIMER_REGEX_PATTERNS:
-        match = pattern.search(content)
-        if match:
-            try:
-                timer = int(match.group(1))
-                logger.info(f"Found timer value using regex: {timer}")
-                break
-            except ValueError:
-                logger.warning(f"Found timer string but couldn't convert to integer: {match.group(1)}")
-    
-    # If regex approach failed for either value, try minimal JS evaluation as fallback
-    if not lname:
-        logger.warning("Couldn't extract lname using regex, trying JavaScript evaluation...")
-        try:
-            # Simple script to extract lname from MyUpdate function
-            lname_js = """() => {
-                if (document.documentElement.outerHTML.includes('lname=Ford')) {
-                    const match = document.documentElement.outerHTML.match(/lname=Ford([\\d,]+)/);
-                    return match ? 'Ford' + match[1] : null;
-                }
-                if (typeof MyUpdate === 'function') {
-                    const myUpdateStr = MyUpdate.toString();
-                    const match = myUpdateStr.match(/lname=([^&"]+)/);
-                    return match ? match[1] : null;
-                }
-                return null;
-            }"""
-            lname = await page.evaluate(lname_js)
-            if lname:
-                logger.info(f"Found lname value using JS evaluation: {lname}")
-        except Exception as e:
-            logger.error(f"JavaScript evaluation for lname failed: {e}")
-    
-    if not timer:
-        logger.warning("Couldn't extract timer using regex, trying JavaScript evaluation...")
-        try:
-            # Simple script to extract timer
-            timer_js = """() => {
-                if (typeof timer !== 'undefined') {
-                    return timer;
-                }
-                
-                const scripts = Array.from(document.querySelectorAll('script'));
-                for (const script of scripts) {
-                    if (script.textContent && script.textContent.includes('timer')) {
-                        const match = script.textContent.match(/timer\\s*=\\s*(\\d+)/);
-                        if (match) return parseInt(match[1], 10);
-                    }
-                }
-                
-                // Fallback: just return current timestamp
-                return Date.now();
-            }"""
-            timer = await page.evaluate(timer_js)
-            if timer:
-                logger.info(f"Found timer value using JS evaluation: {timer}")
-        except Exception as e:
-            logger.error(f"JavaScript evaluation for timer failed: {e}")
-            # Use a timestamp fallback
-            timer = int(time.time() * 1000)
-            logger.warning(f"Using fallback timestamp for timer: {timer}")
-    
-    if not lname:
-        logger.warning(f"Could not extract lname, falling back to {DEFAULT_LNAME_FALLBACK}")
-        lname = DEFAULT_LNAME_FALLBACK
-    
-    if not timer:
-        logger.warning(f"Could not extract timer, falling back to {DEFAULT_TIMER_FALLBACK}")
-        timer = DEFAULT_TIMER_FALLBACK
-    
-    return lname, timer
 
 
 class AuthSessionManager:
@@ -156,8 +83,8 @@ class AuthSessionManager:
         if self._lname is None:
             await self.fetch_and_cache_params()
         if self._lname is None: # Still None after fetch attempt
-             logger.warning(f"Could not extract lname, falling back to {DEFAULT_LNAME_FALLBACK}")
-             return DEFAULT_LNAME_FALLBACK
+             logger.warning("Could not extract lname, no fallback available")
+             return None
         return self._lname
 
     @property
@@ -214,7 +141,12 @@ class AuthSessionManager:
         if not content:
              logger.debug("Fetching page content via httpx.")
              try:
-                 response = await self._client.get(GLASIR_TIMETABLE_URL)
+                 response = await self._client.get(
+                     GLASIR_TIMETABLE_URL,
+                     timeout=30.0,
+                     follow_redirects=True,
+                     verify=True
+                 )
                  response.raise_for_status()
                  content = response.text
              except httpx.RequestError as e:
@@ -228,41 +160,97 @@ class AuthSessionManager:
             logger.error("Failed to obtain page content for lname/timer extraction.")
             return None, None
 
-        # --- Extraction Logic ---
-        lname = self._search_patterns(content, LNAME_REGEX_PATTERNS)
-        timer = self._search_patterns(content, TIMER_REGEX_PATTERNS)
-
-        if not lname:
-            logger.warning("Could not extract 'lname'.")
-        else:
-            logger.info(f"Successfully extracted lname: {lname}")
-
-        if not timer:
-            logger.warning("Could not extract 'timer'.")
-        else:
-            logger.info(f"Successfully extracted timer: {timer}")
-
-        return lname, timer
+        # Use the new utility function for parameter extraction
+        try:
+            lname, timer = parse_dynamic_params(content)
+            return lname, str(timer) if timer is not None else None
+        except Exception as e:
+            logger.error(f"Error extracting parameters from content: {e}")
+            return None, None
 
 
     async def fetch_and_cache_params(self, page: Optional[Page] = None) -> None:
-        """Fetches and caches lname and timer."""
-        logger.debug("Fetching and caching lname and timer.")
-        lname, timer = await self.extract_lname_and_timer(page=page)
-        if lname:
-            self._lname = lname
-            self._cached_params["lname"] = lname
-        if timer:
-            self._timer = timer
-            self._cached_params["timer"] = timer
-
-        if not self._lname or not self._timer:
-             logger.warning("Failed to extract one or both session parameters (lname/timer). Subsequent API calls might fail or use fallbacks.")
-
+        """
+        Fetch and cache 'lname' and 'timer' parameters.
+        
+        Args:
+            page: Optional Playwright page object to extract parameters from.
+                 If None, will fetch via httpx.
+        """
+        logger.debug("Fetching and caching session parameters")
+        try:
+            # First try to fetch page content using httpx client with robust configuration
+            if page is None:
+                try:
+                    # Configure a robust client for better connection handling
+                    client_kwargs = {
+                        "timeout": 30.0,
+                        "follow_redirects": True,
+                        "verify": True
+                    }
+                    
+                    # Verify DNS resolution first
+                    try:
+                        domain = GLASIR_TIMETABLE_URL.split("//")[1].split("/")[0]
+                        import socket
+                        socket.gethostbyname(domain)
+                    except socket.gaierror as e:
+                        logger.error(f"DNS resolution failed for {domain}: {e}")
+                        raise httpx.ConnectError(f"DNS resolution failed: {e}")
+                    
+                    logger.info("Fetching timetable page to extract dynamic parameters")
+                    response = await self._client.get(
+                        GLASIR_TIMETABLE_URL,
+                        **client_kwargs
+                    )
+                    response.raise_for_status()
+                    content = response.text
+                    
+                    # Use the utility function to parse parameters
+                    lname, timer = parse_dynamic_params(content)
+                except Exception as e:
+                    logger.error(f"Failed to fetch parameters via httpx: {e}")
+                    lname, timer = None, None
+            else:
+                # If page is provided, use it
+                logger.info("Using provided Playwright page to extract dynamic parameters")
+                try:
+                    content = await page.content()
+                    lname, timer = parse_dynamic_params(content)
+                except Exception as e:
+                    logger.error(f"Failed to extract parameters from page: {e}")
+                    lname, timer = None, None
+                
+            # Cache the extracted values
+            if lname:
+                self._lname = lname
+                self._cached_params["lname"] = lname
+                logger.debug(f"Cached lname parameter: {lname}")
+            else:
+                logger.warning("Failed to extract lname parameter")
+                
+            if timer:
+                self._timer = str(timer)
+                self._cached_params["timer"] = str(timer)
+                logger.debug(f"Cached timer parameter: {timer}")
+            else:
+                logger.warning("Failed to extract timer parameter")
+                
+            # For timer, we can still use a fallback (current timestamp)
+            if not self._timer:
+                current_time = str(int(time.time() * 1000))
+                self._timer = current_time
+                self._cached_params["timer"] = current_time
+                logger.warning(f"Using current timestamp for timer: {current_time}")
+                
+        except Exception as e:
+            logger.error(f"Error fetching session parameters: {e}")
+            # Only set timer fallback, not lname
+            self._timer = self._timer or str(int(time.time() * 1000))
 
     def clear_cache(self):
-        """Clears the cached lname and timer."""
-        logger.debug("Clearing cached session parameters (lname/timer).")
+        """Clear all cached session parameters to force refresh on next use."""
+        logger.info("Clearing session parameter cache")
         self._lname = None
         self._timer = None
         self._cached_params = {} 

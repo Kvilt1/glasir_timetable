@@ -1,72 +1,68 @@
-# First ignore everything
-*
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
 
-# Then whitelist files we want to track
-!.gitignore
-!__main__.py
-!main.py
-!INSTALLATION.md
-!pdm.toml
-!pyproject.toml
-!requirements.txt
-!README.md
+# C extensions
+*.so
 
-# Track glasir_timetable directory but with exclusions
-!glasir_timetable/
-!glasir_timetable/**/*.py
-!glasir_timetable/**/*.js
-!glasir_timetable/**/*.md
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
 
-# Always ignore Python cache files regardless of where they are
-**/__pycache__/
-**/*.py[cod]
-**/*$py.class
-**/*.so
-
-# Ignore specific files inside glasir_timetable
-glasir_timetable/credentials.json
-glasir_timetable/weeks/
-
-# Ignore Python virtual environments
-.Python
-.env
-.venv
-env/
+# Virtual environments
 venv/
+env/
 ENV/
-env.bak/
-venv.bak/
+.env/
+.venv/
 
-# OS files
+# JSON files (credentials and cache)
+*.json
+
+
+# macOS system files
 .DS_Store
-Thumbs.db
+.AppleDouble
+.LSOverride
+._*
 
-# Private individual user cursor rules
-.cursor/rules/_*.mdc
-
-# IDE specific files
+# IDE files
 .idea/
 .vscode/
-*.iml
 *.swp
 *.swo
 .cursor/
 .cursorignore
 .cursorindexingignore
 
+# Testing
+.pytest_cache/
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache/
+nosetests.xml
+coverage.xml
+*.cover
+
+# Logs and databases
+*.log
+*.sqlite
+*.db
+
+# Local development settings
+.env
+
+# Project specific
+weeks/
+.ai/
+.specstory/
+
 # Documentation and notes that shouldn't be in the repo
 notepad_context/
 report.md
-next_steps.md
-
-# Build artifacts
-build/
-dist/
-*.egg-info/
-*.egg
-
-# Logs and data files
-logs/
-*.log
-output/
-.specstory/
+next_steps.md 
