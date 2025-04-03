@@ -34,7 +34,6 @@ from glasir_timetable.constants import (
 # Configuration options
 _config = {
     "use_cookie_auth": False,  # Use cookie-based authentication
-    "use_api_client": True,    # Use the API client for extraction services
     "storage_dir": DATA_DIR,   # Default storage directory
     "cookie_file": AUTH_COOKIES_FILE  # Default cookie file path
 }
@@ -129,20 +128,23 @@ def create_extraction_service(api_client: Optional[ApiClient] = None) -> Extract
     """
     Create and configure the extraction service.
     
+    The extraction service uses API-based extraction with HTML parsing through
+    the timetable.py parser.
+    
     Args:
-        api_client: Optional ApiClient for API-based extraction (if use_api_client is True)
+        api_client: ApiClient for API-based extraction
         
     Returns:
         ExtractionService: The configured extraction service
     """
-    # Use the API extraction service if configured and API client provided
-    if _config.get("use_api_client", True) and api_client:
+    # Always use the API extraction service
+    if api_client:
         logger.info("Using API-based extraction service")
         return ApiExtractionService(api_client)
-    
-    # Default to Playwright-based extraction
-    logger.info("Using Playwright-based extraction service")
-    return PlaywrightExtractionService()
+    else:
+        # Fallback to Playwright-based extraction if no API client is available
+        logger.info("Using Playwright-based extraction service (fallback)")
+        return PlaywrightExtractionService()
 
 def create_formatting_service() -> FormattingService:
     """
@@ -179,11 +181,9 @@ def create_services() -> Dict[str, Any]:
     auth_session_manager = get_service("auth_session_manager", 
                                        lambda: create_auth_session_manager(auth_service))
     
-    # Create API client if enabled
-    api_client = None
-    if _config.get("use_api_client", True):
-        api_client = get_service("api_client", 
-                                 lambda: create_api_client(auth_session_manager))
+    # Create API client
+    api_client = get_service("api_client", 
+                             lambda: create_api_client(auth_session_manager))
     
     # Create other services
     nav_service = get_service("nav", create_navigation_service)

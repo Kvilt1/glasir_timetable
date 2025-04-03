@@ -1,126 +1,132 @@
-# Installation Guide
-
-This guide covers multiple installation methods for the Glasir Timetable Extractor.
+# Installation Instructions
 
 ## Prerequisites
 
-- Python 3.8 or higher
-- pip, Poetry, or PDM (depending on your preferred installation method)
+- Python 3.7 or higher
+- Playwright (for the initial login process and HTML parsing)
+- A valid Glasir account
 
-## Method 1: Using pip (Standard)
+## Step 1: Install Python Dependencies
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/glasir_timetable.git
-cd glasir_timetable
-
-# Install dependencies
+# Install required Python packages
 pip3 install -r requirements.txt
 
 # Install Playwright browsers
-python3 -m playwright install
-
-# Run the application
-python3 main.py --username your_username --password your_password
+python3 -m playwright install chromium
 ```
 
-## Method 2: Using Poetry (Recommended)
-
-Poetry provides better dependency resolution and virtual environment management.
+## Step 2: Clone and Setup
 
 ```bash
-# Install Poetry if you don't have it
-curl -sSL https://install.python-poetry.org | python3 -
-
 # Clone the repository
 git clone https://github.com/yourusername/glasir_timetable.git
 cd glasir_timetable
 
-# Install dependencies
-poetry install
-
-# Install Playwright browsers
-poetry run python -m playwright install
-
-# Run the application
-poetry run python glasir_timetable/main.py --username your_username --password your_password
-
-# Alternative: Use the defined script
-poetry run glasir --username your_username --password your_password
+# Create a credentials file (optional)
+# If not created, you'll be prompted for credentials on first run
+echo '{"username": "your_username", "password": "your_password"}' > glasir_timetable/credentials.json
 ```
 
-## Method 3: Using PDM
-
-PDM is a modern Python package and dependency manager.
+## Step 3: Run the Application
 
 ```bash
-# Install PDM if you don't have it
-curl -sSL https://pdm.fming.dev/install-pdm.py | python3 -
+# Basic usage - extract current week only
+python3 -m glasir_timetable.main
 
-# Clone the repository
-git clone https://github.com/yourusername/glasir_timetable.git
-cd glasir_timetable
+# Extract current week plus 2 weeks forward and 2 weeks backward
+python3 -m glasir_timetable.main --weekforward 2 --weekbackward 2
 
-# Install dependencies
-pdm install
-
-# Install Playwright browsers
-pdm run python -m playwright install
-
-# Run the application
-pdm run python glasir_timetable/main.py --username your_username --password your_password
-
-# Alternative: Use the defined script
-pdm run glasir --username your_username --password your_password
+# Extract all available weeks
+python3 -m glasir_timetable.main --all-weeks
 ```
 
-## Optional: Using Credentials File
+## Authentication Details
 
-Instead of providing credentials via command line, you can create a `credentials.json` file:
+The application uses a two-stage authentication process:
 
-```json
-{
-  "username": "your_username",
-  "password": "your_password"
-}
+1. First login: Playwright is used to authenticate with the Glasir website and obtain cookies.
+2. Subsequent requests: The application uses the cookies obtained in the first step to make API requests.
+
+The cookies are saved to a file (`cookies.json` by default) and reused for subsequent runs. They will be refreshed automatically when expired.
+
+## Advanced Configuration
+
+### Cookie Authentication
+
+Cookie-based authentication is enabled by default to minimize login requests. You can disable it with the `--no-cookie-refresh` flag.
+
+```bash
+# Disable cookie refreshing
+python3 -m glasir_timetable.main --no-cookie-refresh
 ```
 
-Place this file in the `glasir_timetable` directory or specify a custom path with `--credentials-file`.
+### Custom Output Directory
+
+By default, the application saves timetable data to `glasir_timetable/weeks`. You can specify a custom output directory:
+
+```bash
+python3 -m glasir_timetable.main --output-dir ~/my_timetable_data
+```
+
+### Update Teacher Map
+
+The application maintains a cache of teacher initials to full names. To update this cache:
+
+```bash
+python3 -m glasir_timetable.main --teacherupdate --skip-timetable
+```
+
+### Error Handling and Debugging
+
+For troubleshooting, you can enable more detailed logging:
+
+```bash
+# Enable detailed logging
+python3 -m glasir_timetable.main --log-level DEBUG --collect-error-details --collect-tracebacks
+
+# Save logs to a file
+python3 -m glasir_timetable.main --log-file timetable_extraction.log
+
+# Enable screenshots on errors
+python3 -m glasir_timetable.main --enable-screenshots
+```
+
+## Docker Installation (Optional)
+
+You can also run the application using Docker:
+
+```bash
+# Build the Docker image
+docker build -t glasir_timetable .
+
+# Run with Docker
+docker run -v $(pwd)/data:/app/data glasir_timetable --output-dir /app/data
+```
 
 ## Troubleshooting
 
-### Playwright Installation Issues
+### Authentication Issues
 
-If you encounter Playwright installation issues:
+- Check that your credentials are correct
+- Try deleting the cookies.json file to force a fresh login
+- Make sure you have a working internet connection
+
+### Extraction Issues
+
+- If the API extraction fails, try again later as the Glasir website may be experiencing issues
+- Check the log files for detailed error messages
+- Verify that your account has access to the timetable system
+
+### Browser Installation Issues
+
+If you encounter issues with Playwright browser installation:
 
 ```bash
-# For specific browser installation:
-python3 -m playwright install chromium
-
-# For dependencies installation:
-python3 -m playwright install-deps
+# Force reinstall browsers
+python3 -m playwright install --force
 ```
 
-### SSL Certificate Errors
+## Next Steps
 
-If you encounter SSL certificate errors during installation or execution:
-
-```bash
-# Add trusted certificates environment variable
-export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-export NODE_TLS_REJECT_UNAUTHORIZED=0
-
-# Then install dependencies again
-```
-
-### Dependency Conflicts
-
-With Poetry or PDM, dependency conflicts are minimized, but if they occur:
-
-```bash
-# With Poetry:
-poetry update --lock
-
-# With PDM:
-pdm update
-``` 
+After installation, see the README.md file for more details on usage and features. 

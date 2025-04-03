@@ -10,8 +10,8 @@ import logging
 from typing import Dict, Optional
 from bs4 import BeautifulSoup, Tag
 
-# Remove the problematic import that causes circular dependency
-# from glasir_timetable.api_client import fetch_teacher_mapping
+# Import fetch_teacher_mapping from api_client
+from glasir_timetable.api_client import fetch_teacher_mapping, parse_teacher_map_html_response
 from ..utils.error_utils import handle_errors, GlasirScrapingError
 from ..constants import TEACHER_CACHE_FILE
 
@@ -54,85 +54,6 @@ def save_teacher_cache(teacher_map: Dict[str, str], cache_file: str = TEACHER_CA
          logger.error(f"Data type error saving teacher cache {cache_file}: {e}")
 
 
-# --- Parsing logic moved from api_client.py ---
-@handle_errors(default_return={}, error_category="parsing_teacher_map_html")
-def parse_teacher_map_html_response(html_content: str) -> Dict[str, str]:
-    """
-    Parses the HTML response from the laerer.asp endpoint to extract the teacher map.
-
-    Args:
-        html_content: The HTML content string from the teacher map endpoint.
-
-    Returns:
-        A dictionary mapping teacher initials to full names. Returns {} on failure or if no teachers found.
-    """
-    if not html_content:
-        logger.warning("Received empty content for teacher map parsing.")
-        return {}
-
-    soup = BeautifulSoup(html_content, "lxml")
-    teacher_map = {}
-
-    try:
-        # First try the traditional select element approach
-        # Find the select element containing teacher options
-        select_element = soup.find("select")  # Assuming there's only one relevant select
-        if not select_element:
-            # Try finding by a known name attribute if ID is unreliable
-            select_element = soup.find("select", {"name": "laerer"})  # Example name
-            if not select_element:
-                logger.warning("Could not find the select element containing teacher options in HTML. Trying alternative extraction method.")
-                # Instead of raising an error, try the alternative approach
-                raise ValueError("Select element not found")
-
-        options = select_element.find_all("option")
-        if not options:
-            logger.warning("No teacher <option> tags found within the select element. Trying alternative extraction method.")
-            raise ValueError("No options found in select element")
-
-        for option in options:
-            if isinstance(option, Tag):
-                initials = option.get("value")
-                full_name = option.get_text(strip=True)
-
-                # Basic validation and cleanup
-                if initials and full_name and initials != "-1":  # Skip placeholder values
-                    # Sometimes the name might contain the initials e.g., "ABC - Anders B. Christensen"
-                    # Attempt to clean this up
-                    if f"{initials} -" in full_name:
-                        cleaned_name = full_name.split(f"{initials} -", 1)[-1].strip()
-                        if cleaned_name:  # Use cleaned name only if it's not empty
-                            full_name = cleaned_name
-                        else:  # If cleaning results in empty, keep original (edge case)
-                            logger.debug(f"Cleaning resulted in empty name for initials {initials}, keeping original: {full_name}")
-
-                    # Further cleanup: Remove potential "(initials)" suffix if present
-                    if full_name.endswith(f"({initials})"):
-                        full_name = full_name[:-len(f"({initials})")].strip()
-
-                    if initials in teacher_map and teacher_map[initials] != full_name:
-                        logger.warning(f"Duplicate teacher initials '{initials}' found with different names: '{teacher_map[initials]}' vs '{full_name}'. Keeping the latter.")
-                    teacher_map[initials] = full_name
-
-        if not teacher_map:
-            logger.warning("Parsed teacher map HTML but extracted no valid teacher entries. Trying alternative extraction method.")
-            raise ValueError("No teachers extracted from select element")
-        else:
-            logger.info(f"Successfully parsed {len(teacher_map)} teachers from HTML select element.")
-
-    except (ValueError, GlasirScrapingError):
-        # If the select element approach fails, try the alternative regex-based approach
-        logger.info("Trying alternative teacher extraction method using regex patterns.")
-        teacher_map = extract_teachers_from_html(html_content)
-        
-        if not teacher_map:
-            logger.warning("Alternative extraction method also failed to extract teacher information.")
-        else:
-            logger.info(f"Successfully extracted {len(teacher_map)} teachers using alternative method.")
-
-    return teacher_map
-
-
 # --- Function using Playwright Page (kept for potential Playwright-based extraction) ---
 # This function might still be called by PlaywrightExtractionService if API fails or is not used.
 @handle_errors(default_return={}, error_category="extracting_teacher_map_via_playwright")
@@ -150,7 +71,7 @@ async def extract_teacher_map_with_playwright(page) -> Dict[str, str]:
         # Get the HTML content of the select element or the whole page
         # Getting the whole page content might be simpler if parsing logic handles it
         content = await page.content()
-        teacher_map = parse_teacher_map_html_response(content) # Reuse parsing logic
+        teacher_map = parse_teacher_map_html_response(content) # Reuse parsing logic from api_client
 
         if not teacher_map:
             logger.warning("Extracted teacher map via Playwright, but no entries were found.")
@@ -165,16 +86,15 @@ async def extract_teacher_map_with_playwright(page) -> Dict[str, str]:
         # Returning {} aligns with other error handling for this function
         return {}
 
-async def extract_teacher_map(page, use_cache=False, cache_path=None, use_api=False, cookies=None, lname_value=None, timer_value=None):
+async def extract_teacher_map(page, use_cache=False, cache_path=None, cookies=None, lname_value=None, timer_value=None):
     """
-    Extract teacher map from the timetable page.
+    Extract teacher map from the timetable page using API with fallback to Playwright methods.
     Returns a dictionary mapping teacher initials to full names with initials.
     
     Args:
         page: The Playwright page object.
         use_cache: Whether to use a cached version if available.
         cache_path: Path to the cache file (default is in the same directory as this module).
-        use_api: Whether to use the API approach instead of page navigation.
         cookies: Cookies dictionary to use with the API approach.
         lname_value: The lname value for API requests.
         timer_value: The timer value for API requests.
@@ -198,18 +118,40 @@ async def extract_teacher_map(page, use_cache=False, cache_path=None, use_api=Fa
         except Exception as e:
             logger.warning(f"Error loading teacher cache: {e}")
     
-    logger.info("Extracting teacher mapping from page...")
+    logger.info("Extracting teacher mapping...")
     
-    # If API approach is requested, use that instead of navigation
-    if use_api and cookies is not None:
+    # Use API approach as the primary method
+    if cookies is not None:
         logger.info("Using API approach to extract teacher mapping...")
-        # Instead of directly calling fetch_teacher_mapping, use the new ApiClient approach
-        # This will need to be updated when ApiClient is integrated in the service layer
-        # For now, just log that API approach isn't available after refactoring
-        logger.warning("API approach for teacher mapping temporarily disabled due to refactoring")
-        # Fallback to the Playwright method
+        try:
+            teacher_map = await fetch_teacher_mapping(
+                cookies=cookies,
+                lname_value=lname_value,
+                timer_value=timer_value
+            )
+            
+            if teacher_map and len(teacher_map) > 0:
+                logger.info(f"Successfully extracted {len(teacher_map)} teachers via API")
+                
+                # Save to cache
+                if cache_path:
+                    try:
+                        with open(cache_path, 'w', encoding='utf-8') as f:
+                            json.dump(teacher_map, f, ensure_ascii=False, indent=2)
+                        logger.info(f"Saved teacher mapping to cache at {cache_path}")
+                    except Exception as e:
+                        logger.warning(f"Error saving teacher cache: {e}")
+                
+                return teacher_map
+            else:
+                logger.warning("API extraction returned empty teacher map. Falling back to Playwright method.")
+        except Exception as e:
+            logger.error(f"Error with API-based teacher mapping extraction: {e}")
+            logger.warning("Falling back to Playwright method...")
+    else:
+        logger.warning("No cookies provided for API extraction. Falling back to Playwright method.")
     
-    # Otherwise continue with the original approach
+    # Fallback to the Playwright method if API approach fails or returns empty
     original_url = await navigate_to_teachers_page(page)
     
     if original_url is None:
@@ -402,190 +344,69 @@ async def extract_teacher_map_fallback(page):
                     }
                 });
                 
-                // Method 2: Look for text patterns like "Name (XXX)"
-                if (Object.keys(teacherMap).length < 10) {
-                    const textWalker = document.createTreeWalker(
-                        document.body,
-                        NodeFilter.SHOW_TEXT,
-                        null,
-                        false
-                    );
-                    
-                    let textNode;
-                    while (textNode = textWalker.nextNode()) {
-                        const text = textNode.nodeValue.trim();
-                        const match = text.match(/(.*?)\\s*\\(([A-Z]{2,4})\\)/);
-                        if (match) {
-                            const fullName = match[1].trim();
-                            const initials = match[2].trim();
-                            teacherMap[initials] = fullName;  // Store only the name without appending initials
-                        }
+                // Method 2: Check table cells 
+                document.querySelectorAll('td').forEach(cell => {
+                    const text = cell.textContent.trim();
+                    const match = text.match(/(.*?)\\s*\\(([A-Z]{2,4})\\)/);
+                    if (match && match[1] && match[2]) {
+                        const fullName = match[1].trim();
+                        const initials = match[2].trim();
+                        teacherMap[initials] = fullName;
                     }
-                }
+                });
                 
                 return teacherMap;
             }
             """)
             
-            # Merge JavaScript results with existing map
+            # Merge JS results
             for initials, name in js_result.items():
                 if initials not in teacher_map:
                     teacher_map[initials] = name
                     
-            logger.info(f"JavaScript approach extracted {len(js_result)} teachers")
+            logger.info(f"JavaScript fallback found a total of {len(teacher_map)} teachers")
         except Exception as e:
-            logger.error(f"Error in JavaScript-based fallback: {e}")
-    
-    # As a last resort, include some fallback entries for common teachers 
-    # (only add if not already present)
-    if len(teacher_map) < 10:
-        default_map = {
-            "BIJ": "Brynjálvur I. Johansen",
-            "DTH": "Durita Thomsen",
-            "HSV": "Henriette Svenstrup",
-            "JBJ": "Jan Berg Jørgensen",
-            "JOH": "Jón Mikael Degn í Haraldstovu",
-            "PEY": "Pætur Eysturskarð",
-            "TJA": "Tina Kildegaard Jakobsen",
-            "ESN": "Erla S. Nielsen",
-            "GUR": "Guðrið Hansen",
-            "HEJ": "Heidi Durhuus",
-            "MRH": "Martin Hofmeister",
-            "SAS": "Sámal Samuelsen"
-        }
-        
-        for initials, name in default_map.items():
-            if initials not in teacher_map:
-                teacher_map[initials] = name
-                
-    logger.info(f"Total extracted: {len(teacher_map)} teachers using fallback methods")
+            logger.error(f"Error in JavaScript fallback: {e}")
+            
     return teacher_map
 
 async def navigate_to_teachers_page(page):
     """
-    Navigate to the teachers page and return the original URL.
+    Navigate to the teachers page to extract teacher mapping.
     
     Args:
         page: The Playwright page object.
         
     Returns:
-        str: The original URL if navigation was successful, None otherwise.
+        str: The original URL to return to after extraction, or None if navigation failed.
     """
-    logger.info("Navigating to teachers page...")
-    
-    # Store current URL to return later
-    current_url = page.url
-    
     try:
-        # Fixed approach - use individual selectors without invalid CSS
-        success = await page.evaluate("""
-        () => {
-            // Try finding by title attribute
-            let links = document.querySelectorAll('a.Knap[title="Lærarar"]');
-            if (links.length > 0) {
-                links[0].click();
-                return true;
-            }
+        # Store the current URL to return to later
+        original_url = page.url
+        
+        # Try to navigate to the teachers page
+        teacher_url = "https://tg.glasir.fo/132n/laerer.asp"
+        logger.info(f"Navigating to teachers page: {teacher_url}")
+        
+        try:
+            # Use a navigation approach that handles redirects appropriately
+            response = await page.goto(teacher_url, wait_until="domcontentloaded")
             
-            // Try finding by text content
-            links = Array.from(document.querySelectorAll('a.Knap')).filter(a => 
-                a.textContent.includes('Lærarar') || a.textContent.includes('Lærarar vm.')
-            );
-            if (links.length > 0) {
-                links[0].click();
-                return true;
-            }
+            # Wait for the page to fully loaded
+            await page.wait_for_load_state("networkidle", timeout=10000)
             
-            // Try by onclick attribute
-            links = document.querySelectorAll('a[onclick*="teachers.asp"]');
-            if (links.length > 0) {
-                links[0].click();
-                return true;
-            }
-            
-            return false;
-        }
-        """)
-        
-        if not success:
-            logger.warning("Could not find the teachers link.")
-            return None
-        
-        # Wait for navigation to complete
-        await page.wait_for_load_state("networkidle", timeout=5000)
-        
-        # Check if we're on the teachers page
-        has_teacher_links = await page.evaluate("""
-        () => {
-            return document.querySelectorAll('a[onclick*="teach"]').length > 0;
-        }
-        """)
-        
-        if has_teacher_links:
-            logger.info("Successfully navigated to teachers page")
-            return current_url
-        else:
-            logger.warning("Navigation may have occurred but teachers page not detected")
-            return current_url
+            # Check if the navigation was successful
+            if response and response.status == 200:
+                logger.info("Successfully navigated to teachers page.")
+                return original_url
+            else:
+                logger.warning(f"Navigation to teachers page returned status {response.status if response else 'unknown'}")
+                return original_url  # Still return original URL for fallback
+                
+        except Exception as e:
+            logger.error(f"Error navigating to teachers page: {e}")
+            return original_url  # Still return original URL for fallback
             
     except Exception as e:
-        logger.error(f"Error navigating to teachers page: {e}")
-        return None
-
-def extract_teachers_from_html(html_content):
-    """
-    Extract teacher information directly from HTML content.
-    Useful when you have the teacher HTML directly without needing navigation.
-    
-    Args:
-        html_content: The HTML content containing teacher information
-        
-    Returns:
-        dict: A mapping of teacher initials to full names.
-    """
-    teacher_map = {}
-    
-    # Exact pattern for the table HTML structure shown in the example:
-    # Format: Name (<a href=# onclick="MyUpdate('/i/udvalg.asp', 'teachXXX'+'&v=0&id=XXX' , 'MyWindowMain')">XXX</a>)
-    pattern = r'([^<>]+?)\s*\(\s*<a href=# onclick="MyUpdate\(\'\/i\/udvalg\.asp\', \'teach([A-Z]{2,4})\'[^>]*?>([A-Z]{2,4})</a>\s*\)'
-    matches = re.findall(pattern, html_content)
-    
-    for match in matches:
-        full_name = match[0].strip()
-        initials = match[2].strip()  # Use the visible initials (within the <a> tag)
-        teacher_map[initials] = full_name
-    
-    # If the exact pattern didn't work, try a more general one
-    if len(teacher_map) < 10:
-        pattern2 = r'([^<>]+?)\s*\(\s*<a [^>]*?onclick="[^"]*?\'teach([A-Z]{2,4})\'[^"]*?"[^>]*?>([A-Z]{2,4})</a>\s*\)'
-        matches = re.findall(pattern2, html_content)
-        
-        for match in matches:
-            full_name = match[0].strip()
-            initials = match[2].strip()
-            if initials not in teacher_map:
-                teacher_map[initials] = full_name
-    
-    # If still not enough, try with a simpler pattern
-    if len(teacher_map) < 10:
-        pattern3 = r'([^<>]+?)\s*\(\s*<a [^>]*?>([A-Z]{2,4})</a>\s*\)'
-        matches = re.findall(pattern3, html_content)
-        
-        for match in matches:
-            full_name = match[0].strip()
-            initials = match[1].strip()
-            if initials not in teacher_map:
-                teacher_map[initials] = full_name
-    
-    # Fallback pattern for simple Name (XXX) format without links
-    if len(teacher_map) < 10:
-        pattern4 = r'([^<>]+?)\s*\(\s*([A-Z]{2,4})\s*\)'
-        matches = re.findall(pattern4, html_content)
-        
-        for match in matches:
-            full_name = match[0].strip()
-            initials = match[1].strip()
-            if initials not in teacher_map:
-                teacher_map[initials] = full_name
-    
-    return teacher_map 
+        logger.error(f"General error in teacher page navigation: {e}")
+        return None 

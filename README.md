@@ -1,93 +1,90 @@
-# Glasir Timetable Site Mapper
+# Glasir Timetable Exporter
 
-A comprehensive site mapping tool for the Glasir timetable website. This script authenticates with the site using cookies and captures:
+A tool for extracting and exporting timetable data from Glasir's internal timetable system.
 
-- All HTML pages and their content
-- CSS stylesheets
-- JavaScript files 
-- Network requests and responses
-- Site structure and navigation
-- Timetable data across all available weeks
-- Homework content for all classes
-- Teacher information
+## Overview
 
-## Prerequisites
-
-- Python 3.7+
-- Playwright
-- httpx
-- The Glasir timetable package (for cookie authentication)
-
-## Installation
-
-1. Make sure you have Python 3.7+ installed
-2. Install the required packages:
-   ```
-   pip3 install playwright httpx
-   playwright install
-   ```
-3. Ensure you have valid cookies in the cookies.json file (use the cookie_auth.py module to refresh them if needed)
-
-## Usage
-
-Run the script with the following command:
-
-```bash
-python3 site_mapper.py
-```
-
-### Command-line options:
-
-- `-o`, `--output-dir`: Directory where mapping output will be saved (default: "site_map_output")
-- `-c`, `--cookie-path`: Path to the cookies.json file (default: "./glasir_timetable/cookies.json")
-- `-d`, `--depth`: Maximum crawl depth for site exploration (default: 2)
-- `-w`, `--weeks`: Number of weeks to navigate forward and backward (default: 5)
-
-Example with all options:
-
-```bash
-python3 site_mapper.py --output-dir my_mapped_site --cookie-path /path/to/cookies.json --depth 3 --weeks 10
-```
-
-## Output Structure
-
-The script organizes captured data into the following directory structure:
-
-- `site_map_output/` (or specified output directory)
-  - `html/`: Captured HTML pages
-  - `css/`: Captured CSS files
-  - `js/`: Captured JavaScript files
-  - `images/`: Screenshots and image resources
-  - `requests/`: Other captured resources
-  - `timetable/`: Extracted timetable data
-  - `homework/`: Extracted homework content
-  - `requests_log.json`: Log of all network requests
-  - `resources.json`: Details of all captured resources
-  - `page_content.json`: Index of all captured pages
-  - `urls.json`: All discovered URLs
-  - `timetable_data.json`: Structured timetable data
-  - `homework_data.json`: Structured homework data
-  - `teacher_map.json`: Teacher information
+This application accesses the Glasir timetable system, authenticates using your credentials, and exports the timetable data to JSON format. The exported data can then be used in various applications, such as calendar integrations or custom timetable viewers.
 
 ## Features
 
-The site mapper performs the following tasks:
+- **API-based Extraction**: Uses Glasir's internal API to extract timetable data efficiently
+- **Automatic Authentication**: Handles login process with your credentials
+- **Week Range Selection**: Export current week, specific ranges, or all available weeks
+- **Homework Integration**: Extracts homework assignments and merges them with timetable entries
+- **Teacher Name Resolution**: Maps teacher initials to full names
+- **Cookie-based Authentication**: Reuses authentication tokens to minimize login requests
+- **Export to JSON**: Exports data in a structured JSON format for easy integration with other applications
 
-1. **Authentication**: Uses cookie-based authentication to access the site
-2. **Resource Collection**: Captures all network requests, HTML, CSS, JavaScript, and images
-3. **Site Crawling**: Recursively follows links within the site's domain
-4. **Week Navigation**: Iterates through available weeks in the timetable
-5. **Homework Collection**: Captures homework details for all lessons
-6. **Teacher Map**: Extracts information from the teacher page
-7. **Storage**: Organizes collected data in a structured directory system
+## Usage
 
-## Working with the Data
+Basic usage:
 
-After running the site mapper, you can analyze the collected data in various ways:
+```bash
+python3 -m glasir_timetable.main --weekforward 2 --weekbackward 2
+```
 
-- Review the HTML content to understand the page structure
-- Analyze JavaScript files to understand the site's behavior
-- Examine network requests to identify API patterns
-- Study the timetable data structure for integration purposes
-- Explore the site navigation structure
-- Understand homework and teacher data relationships 
+This will extract the current week, plus 2 weeks forward and 2 weeks backward.
+
+### Command-line Options
+
+- `--username`: Your Glasir username (without @glasir.fo)
+- `--password`: Your Glasir password
+- `--credentials-file`: JSON file with username and password (default: glasir_timetable/credentials.json)
+- `--weekforward`: Number of weeks forward to extract (default: 0)
+- `--weekbackward`: Number of weeks backward to extract (default: 0)
+- `--all-weeks`: Extract all available weeks from all academic years
+- `--output-dir`: Directory to save output files (default: glasir_timetable/weeks)
+- `--headless`: Run in non-headless mode (default: headless=True)
+- `--log-level`: Set the logging level (choices: DEBUG, INFO, WARNING, ERROR, CRITICAL)
+- `--log-file`: Log to a file instead of console
+- `--collect-error-details`: Collect detailed error information
+- `--collect-tracebacks`: Collect tracebacks for errors
+- `--enable-screenshots`: Enable screenshots on errors
+- `--error-limit`: Maximum number of errors to store per category
+- `--use-cookies`: Use cookie-based authentication when possible (default: True)
+- `--cookie-path`: Path to save/load cookies (default: cookies.json)
+- `--no-cookie-refresh`: Do not refresh cookies even if they are expired
+- `--teacherupdate`: Update the teacher mapping cache at the start of the script
+- `--skip-timetable`: Skip timetable extraction, useful when only updating teachers
+
+## Output Format
+
+The exported JSON files follow this structure:
+
+```json
+{
+  "weekInfo": {
+    "weekNumber": 10,
+    "year": 2023,
+    "startDate": "2023-03-06",
+    "endDate": "2023-03-12"
+  },
+  "events": [
+    {
+      "lessonId": "1234567",
+      "startTime": "08:15",
+      "endTime": "10:00",
+      "dayOfWeek": 1,
+      "subject": "Mathematics",
+      "room": "A1.02",
+      "teacher": "John Doe",
+      "teacherInitials": "JDO",
+      "description": "Homework: Complete exercises 1-10 on page 42"
+    },
+    // More events...
+  ]
+}
+```
+
+## Installation
+
+See the [INSTALLATION.md](INSTALLATION.md) file for detailed installation instructions.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details. 

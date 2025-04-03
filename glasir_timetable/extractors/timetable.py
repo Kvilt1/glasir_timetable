@@ -4,6 +4,8 @@ Timetable extraction logic used to extract data from the Glasir timetable page.
 """
 
 import re
+import os
+import json
 import time
 import logging
 import asyncio
@@ -30,6 +32,9 @@ from glasir_timetable.utils.date_utils import normalize_dates, parse_date
 from glasir_timetable.utils.model_adapters import dict_to_timetable_data
 from glasir_timetable.utils import logger
 from glasir_timetable import add_error, update_stats
+# Import get_student_id from student_utils instead of navigation
+from glasir_timetable.student_utils import get_student_id
+from glasir_timetable.constants import STUDENT_ID_FILE # Use the constant for the file path
 
 from glasir_timetable.models import TimetableData, StudentInfo, WeekInfo, Event
 
@@ -43,50 +48,158 @@ async def extract_student_info(page):
     Returns:
         dict: Student information with name and class
     """
+    student_info = None
+    student_id = None
+
+    # --- Step 1: Try reading from student-id.json ---
     try:
-        # Try to find student info in the page title
-        title = await page.title()
-        # Check for pattern like "Næmingatímatalva: Rókur Kvilt Meitilberg, 22y"
-        title_match = re.search(r"Næmingatímatalva:\s*([^,]+),\s*([^\.]+)", title)
-        if title_match:
-            student_info = {
-                "student_name": title_match.group(1).strip(),
-                "class": title_match.group(2).strip()
-            }
-            logger.info(f"Found student info in page title: {student_info['student_name']}, {student_info['class']}")
-            return student_info
-        
-        # Try to find it in a heading element
-        student_info = await page.evaluate('''() => {
-            // Check various headings
-            for (const selector of ['h1', 'h2', 'h3', '.user-info', '.student-info']) {
-                const element = document.querySelector(selector);
-                if (element) {
-                    const text = element.textContent;
-                    const match = text.match(/Næmingatímatalva:\s*([^,]+),\s*([^\.]+)/);
-                    if (match) {
-                        return {
-                            student_name: match[1].trim(),
-                            class: match[2].trim()
-                        };
+        if os.path.exists(STUDENT_ID_FILE):
+            with open(STUDENT_ID_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # Check for the required structure and non-empty values
+                if isinstance(data, dict) and \
+                   data.get("name") and data.get("class") and data.get("id"):
+                    student_info = {
+                        "student_name": data["name"],
+                        "class": data["class"]
+                    }
+                    student_id = data["id"] # Store the ID as well
+                    logger.info(f"Loaded student info from {STUDENT_ID_FILE}: Name='{student_info['student_name']}', Class='{student_info['class']}', ID='{student_id}'")
+                    return student_info # Return immediately if found
+                else:
+                    logger.warning(f"{STUDENT_ID_FILE} found but content is invalid or incomplete. Attempting extraction.")
+        else:
+            logger.info(f"{STUDENT_ID_FILE} not found. Attempting extraction.")
+    except (json.JSONDecodeError, IOError) as e:
+        logger.error(f"Error reading or parsing {STUDENT_ID_FILE}: {e}. Attempting extraction.")
+    except Exception as e:
+         logger.error(f"Unexpected error reading {STUDENT_ID_FILE}: {e}. Attempting extraction.")
+
+    # --- Step 2: Attempt extraction only if not found in JSON ---
+    if not student_info:
+        logger.info("Attempting to extract student info from page...")
+        try:
+            # Try to find student info in the page title
+            title = await page.title()
+            # Check for pattern like "Næmingatímatalva: Rókur Kvilt Meitilberg, 22y"
+            title_match = re.search(r"(?:Næmingatímatalva:|Naemingatimatalva:)\s*([^,]+),\s*([^\s\.<]+)", title, re.IGNORECASE)
+            if title_match:
+                student_info = {
+                    "student_name": title_match.group(1).strip(),
+                    "class": title_match.group(2).strip()
+                }
+                logger.info(f"Found student info in page title: {student_info['student_name']}, {student_info['class']}")
+                # --- Step 3: Save extracted data to JSON ---
+                if not student_id: # Fetch ID if we didn't get it from the file
+                    student_id = await get_student_id(page)
+
+                if student_id:
+                    save_data = {
+                        "id": student_id,
+                        "name": student_info["student_name"],
+                        "class": student_info["class"]
+                    }
+                    try:
+                        with open(STUDENT_ID_FILE, 'w', encoding='utf-8') as f:
+                            json.dump(save_data, f, indent=4)
+                        logger.info(f"Successfully extracted and saved student info to {STUDENT_ID_FILE}")
+                    except IOError as e:
+                        logger.error(f"Failed to save extracted student info to {STUDENT_ID_FILE}: {e}")
+                else:
+                    logger.warning("Extracted student name/class but could not get student ID to save.")
+
+                return student_info
+            
+            # Try to extract from the page content directly
+            content = await page.content()
+            
+            # Check for pattern in the content (including HTML entities like &aelig;)
+            content_match = re.search(r"N&aelig;mingatímatalva:\s*([^,]+),\s*([^\s<]+)", content, re.IGNORECASE)
+            if content_match:
+                student_info = {
+                    "student_name": content_match.group(1).strip(),
+                    "class": content_match.group(2).strip()
+                }
+                logger.info(f"Found student info in page content: {student_info['student_name']}, {student_info['class']}")
+                # --- Step 3: Save extracted data to JSON ---
+                if not student_id: # Fetch ID if we didn't get it from the file
+                    student_id = await get_student_id(page)
+
+                if student_id:
+                    save_data = {
+                        "id": student_id,
+                        "name": student_info["student_name"],
+                        "class": student_info["class"]
+                    }
+                    try:
+                        with open(STUDENT_ID_FILE, 'w', encoding='utf-8') as f:
+                            json.dump(save_data, f, indent=4)
+                        logger.info(f"Successfully extracted and saved student info to {STUDENT_ID_FILE}")
+                    except IOError as e:
+                        logger.error(f"Failed to save extracted student info to {STUDENT_ID_FILE}: {e}")
+                else:
+                    logger.warning("Extracted student name/class but could not get student ID to save.")
+
+                return student_info
+            
+            # Try to find it in a heading element
+            student_info = await page.evaluate('''() => {
+                // Check various headings
+                for (const selector of ['h1', 'h2', 'h3', '.user-info', '.student-info', 'td']) {
+                    const elements = document.querySelectorAll(selector);
+                    for (const element of elements) {
+                        if (element) {
+                            const text = element.textContent || '';
+                            // Match various patterns of the student info
+                            const patterns = [
+                                /Næmingatímatalva:\s*([^,]+),\s*([^\s\.]+)/i,
+                                /Naemingatimatalva:\s*([^,]+),\s*([^\s\.]+)/i,
+                                /N[æae]mingat[ií]matalva:\s*([^,]+),\s*([^\s\.]+)/i
+                            ];
+                            
+                            for (const pattern of patterns) {
+                                const match = text.match(pattern);
+                                if (match) {
+                                    return {
+                                        student_name: match[1].trim(),
+                                        class: match[2].trim()
+                                    };
+                                }
+                            }
+                        }
                     }
                 }
-            }
-            return null;
-        }''')
-        
-        if student_info:
-            logger.info(f"Found student info in page element: {student_info['student_name']}, {student_info['class']}")
-            return student_info
-    except Exception as e:
-        logger.error(f"Error extracting student info: {e}")
-    
-    # Default to constants as fallback
-    logger.warning("Could not extract student info, using default values")
-    return {
-        "student_name": "Rókur Kvilt Meitilberg",
-        "class": "22y"
-    }
+                return null;
+            }''')
+            
+            if student_info:
+                logger.info(f"Found student info in page element: {student_info['student_name']}, {student_info['class']}")
+                # --- Step 3: Save extracted data to JSON ---
+                if not student_id: # Fetch ID if we didn't get it from the file
+                    student_id = await get_student_id(page)
+
+                if student_id:
+                    save_data = {
+                        "id": student_id,
+                        "name": student_info["student_name"],
+                        "class": student_info["class"]
+                    }
+                    try:
+                        with open(STUDENT_ID_FILE, 'w', encoding='utf-8') as f:
+                            json.dump(save_data, f, indent=4)
+                        logger.info(f"Successfully extracted and saved student info to {STUDENT_ID_FILE}")
+                    except IOError as e:
+                        logger.error(f"Failed to save extracted student info to {STUDENT_ID_FILE}: {e}")
+                else:
+                    logger.warning("Extracted student name/class but could not get student ID to save.")
+
+                return student_info
+        except Exception as e:
+            logger.error(f"Error during extraction attempt: {e}")
+
+    # --- Step 4: Fail hard if both methods failed ---
+    logger.critical("Fatal: Could not determine student name and class from student-id.json or page extraction. Exiting.")
+    raise ValueError("Missing critical student information (name/class).")
 
 async def extract_timetable_data(page, teacher_map, use_models=True):
     """

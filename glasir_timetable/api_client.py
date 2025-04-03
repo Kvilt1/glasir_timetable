@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-API client module for directly accessing Glasir's hidden homework API.
+API client for Glasir Timetable.
 
-This module provides functions to fetch homework data using Glasir's note.asp endpoint.
+This module provides utilities for interacting with the Glasir Timetable API.
 """
 
 import time
@@ -12,7 +12,7 @@ import httpx
 import asyncio
 from typing import Dict, List, Optional, Any, Tuple
 from urllib.parse import urlencode
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 import re
 import os
 import json
@@ -23,7 +23,6 @@ from playwright.async_api import Page
 
 from glasir_timetable import logger
 from glasir_timetable.extractors.homework_parser import clean_homework_text, parse_homework_html_response_structured
-from glasir_timetable.extractors.teacher_map import parse_teacher_map_html_response
 from .session import AuthSessionManager
 from .utils.error_utils import handle_errors, GlasirScrapingError
 from .utils.param_utils import parse_dynamic_params
@@ -35,8 +34,156 @@ from .constants import (
     TIMETABLE_INFO_URL,
     TEACHER_CACHE_FILE,
 )
+from glasir_timetable.student_utils import get_student_id
 
 logger = logging.getLogger(__name__)
+
+@handle_errors(default_return={}, error_category="parsing_teacher_map_html")
+def parse_teacher_map_html_response(html_content: str) -> Dict[str, str]:
+    """
+    Parses the HTML response from the laerer.asp endpoint to extract the teacher map.
+
+    Args:
+        html_content: The HTML content string from the teacher map endpoint.
+
+    Returns:
+        A dictionary mapping teacher initials to full names. Returns {} on failure or if no teachers found.
+    """
+    if not html_content:
+        logger.warning("Received empty content for teacher map parsing.")
+        return {}
+
+    soup = BeautifulSoup(html_content, "lxml")
+    teacher_map = {}
+
+    try:
+        # First try the traditional select element approach
+        # Find the select element containing teacher options
+        select_element = soup.find("select")  # Assuming there's only one relevant select
+        if not select_element:
+            # Try finding by a known name attribute if ID is unreliable
+            select_element = soup.find("select", {"name": "laerer"})  # Example name
+            if not select_element:
+                logger.warning("Could not find the select element containing teacher options in HTML. Trying alternative extraction method.")
+                # Instead of raising an error, try the alternative approach
+                raise ValueError("Select element not found")
+
+        options = select_element.find_all("option")
+        if not options:
+            logger.warning("No teacher <option> tags found within the select element. Trying alternative extraction method.")
+            raise ValueError("No options found in select element")
+
+        for option in options:
+            if isinstance(option, Tag):
+                initials = option.get("value")
+                full_name = option.get_text(strip=True)
+
+                # Basic validation and cleanup
+                if initials and full_name and initials != "-1":  # Skip placeholder values
+                    # Sometimes the name might contain the initials e.g., "ABC - Anders B. Christensen"
+                    # Attempt to clean this up
+                    if f"{initials} -" in full_name:
+                        cleaned_name = full_name.split(f"{initials} -", 1)[-1].strip()
+                        if cleaned_name:  # Use cleaned name only if it's not empty
+                            full_name = cleaned_name
+                        else:  # If cleaning results in empty, keep original (edge case)
+                            logger.debug(f"Cleaning resulted in empty name for initials {initials}, keeping original: {full_name}")
+
+                    # Further cleanup: Remove potential "(initials)" suffix if present
+                    if full_name.endswith(f"({initials})"):
+                        full_name = full_name[:-len(f"({initials})")].strip()
+
+                    if initials in teacher_map and teacher_map[initials] != full_name:
+                        logger.warning(f"Duplicate teacher initials '{initials}' found with different names: '{teacher_map[initials]}' vs '{full_name}'. Keeping the latter.")
+                    teacher_map[initials] = full_name
+
+        if not teacher_map:
+            logger.warning("Parsed teacher map HTML but extracted no valid teacher entries. Trying alternative extraction method.")
+            raise ValueError("No teachers extracted from select element")
+        else:
+            logger.info(f"Successfully parsed {len(teacher_map)} teachers from HTML select element.")
+
+    except (ValueError, GlasirScrapingError):
+        # If the select element approach fails, try the alternative regex-based approach
+        logger.info("Trying alternative teacher extraction method using regex patterns.")
+        teacher_map = extract_teachers_from_html(html_content)
+        
+        if not teacher_map:
+            logger.warning("Alternative extraction method also failed to extract teacher information.")
+        else:
+            logger.info(f"Successfully extracted {len(teacher_map)} teachers using alternative method.")
+
+    return teacher_map
+
+def extract_teachers_from_html(html_content: str) -> Dict[str, str]:
+    """
+    Extract teacher mapping from HTML content using regex patterns.
+    This is an alternative method when the select element approach fails.
+    
+    Args:
+        html_content: The HTML content string to extract from.
+        
+    Returns:
+        dict: A mapping of teacher initials to full names.
+    """
+    teacher_map = {}
+    
+    try:
+        # Several regex patterns to try extracting teacher information
+        patterns = [
+            # Pattern 1: Name (XXX) where XXX is 2-4 uppercase letters with an <a> tag
+            r'([^<>]+?)\s*\(\s*<a[^>]*?>([A-Z]{2,4})</a>\s*\)',
+            
+            # Pattern 2: Name (XXX) with onclick attribute
+            r'([^<>]+?)\s*\(\s*<a [^>]*?onclick="[^"]*?teach([A-Z]{2,4})[^"]*?"[^>]*?>([A-Z]{2,4})</a>\s*\)',
+            
+            # Pattern 3: Simple Name (XXX) pattern without HTML tags
+            r'([^<>]+?)\s*\(\s*([A-Z]{2,4})\s*\)',
+            
+            # Pattern 4: Teacher listing with separator
+            r'([^<>:]+?)\s*:\s*([A-Z]{2,4})'
+        ]
+        
+        # Try patterns in sequence, stopping if we find enough teachers
+        for pattern_index, pattern in enumerate(patterns):
+            matches = re.findall(pattern, html_content)
+            
+            # Process matches based on the pattern format
+            if pattern_index == 0:  # Pattern 1
+                for match in matches:
+                    full_name = match[0].strip()
+                    initials = match[1].strip()
+                    teacher_map[initials] = full_name
+            elif pattern_index == 1:  # Pattern 2
+                for match in matches:
+                    full_name = match[0].strip()
+                    initials = match[2].strip()  # Using the visible initials
+                    if initials not in teacher_map:
+                        teacher_map[initials] = full_name
+            elif pattern_index == 2:  # Pattern 3
+                for match in matches:
+                    full_name = match[0].strip()
+                    initials = match[1].strip()
+                    if initials not in teacher_map:
+                        teacher_map[initials] = full_name
+            elif pattern_index == 3:  # Pattern 4
+                for match in matches:
+                    full_name = match[0].strip()
+                    initials = match[1].strip()
+                    if initials not in teacher_map:
+                        teacher_map[initials] = full_name
+            
+            # If we found a reasonable number of teachers, stop trying other patterns
+            if len(teacher_map) >= 20:
+                logger.info(f"Found {len(teacher_map)} teachers using pattern {pattern_index+1}")
+                break
+        
+        logger.info(f"Extracted a total of {len(teacher_map)} teachers from HTML using regex patterns")
+        return teacher_map
+        
+    except Exception as e:
+        logger.error(f"Error extracting teachers from HTML: {e}")
+        return {}
 
 async def fetch_homework_for_lesson(
     cookies: Dict[str, str],
@@ -1151,88 +1298,6 @@ async def extract_week_range(
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise ValueError(f"Failed to extract week offset range from timetable using API: {e}")
-
-async def get_student_id(page) -> Optional[str]:
-    """
-    Extract the student ID (GUID) from the current page.
-    
-    Args:
-        page: Playwright page object with access to the loaded timetable
-        
-    Returns:
-        String containing the student ID, or None if not found
-    """
-    try:
-        # Try extracting from MyUpdate function if it exists
-        has_my_update = await page.evaluate("typeof MyUpdate === 'function'")
-        
-        if has_my_update:
-            student_id = await page.evaluate("""() => {
-                if (typeof MyUpdate !== 'function') {
-                    return null;
-                }
-                
-                // Extract from MyUpdate function
-                const myUpdateStr = MyUpdate.toString();
-                const idMatch = myUpdateStr.match(/[&?]id=([0-9a-fA-F-]{36})/);
-                return idMatch ? idMatch[1] : null;
-            }""")
-            
-            if student_id:
-                logger.info(f"Extracted student ID from MyUpdate function: {student_id[:5]}...")
-                return student_id
-        
-        # Try extracting from the URL if present
-        url = page.url
-        id_match = re.search(r'[?&]id=([0-9a-fA-F-]{36})', url)
-        if id_match:
-            student_id = id_match.group(1)
-            logger.info(f"Extracted student ID from URL: {student_id[:5]}...")
-            return student_id
-            
-        # Try looking in the page source
-        student_id = await page.evaluate("""() => {
-            // Search for GUID pattern in any script
-            const guidPattern = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
-            
-            // Check scripts first
-            const scripts = Array.from(document.querySelectorAll('script'));
-            for (const script of scripts) {
-                if (script.textContent) {
-                    const match = script.textContent.match(guidPattern);
-                    if (match) {
-                        return match[0];
-                    }
-                }
-            }
-            
-            // Check for any links containing id parameter with GUID
-            const links = Array.from(document.querySelectorAll('a[href*="id="]'));
-            for (const link of links) {
-                const match = link.href.match(/[?&]id=([0-9a-fA-F-]{36})/);
-                if (match) {
-                    return match[1];
-                }
-            }
-            
-            // Look in page source as last resort
-            const pageSource = document.documentElement.outerHTML;
-            const sourceMatch = pageSource.match(guidPattern);
-            return sourceMatch ? sourceMatch[0] : null;
-        }""")
-        
-        if student_id:
-            logger.info(f"Extracted student ID from page source: {student_id[:5]}...")
-            return student_id
-            
-        logger.warning("Could not extract student ID from the page")
-        return None
-        
-    except Exception as e:
-        logger.error(f"Error extracting student ID: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        return None 
 
 class ApiClient:
     """Client for interacting with Glasir's API endpoints."""
