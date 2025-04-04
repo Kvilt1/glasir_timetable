@@ -34,6 +34,12 @@ error_config = {
     "error_limit": 100  # Maximum number of errors to store per category
 }
 
+# Global configuration for raw response saving
+raw_response_config = {
+    "save_enabled": False,
+    "directory": "glasir_timetable/raw_responses/"
+}
+
 # Statistics tracking
 stats = {
     "total_weeks": 0,
@@ -120,3 +126,27 @@ def update_stats(key, value=1, increment=True):
         stats[key] += value
     else:
         stats[key] = value 
+
+def configure_raw_responses(save: bool, directory: str = None):
+    """Configure the raw response saving functionality.
+    
+    Args:
+        save: Whether to save raw responses
+        directory: Directory to save raw responses to (if None, uses default)
+    """
+    global raw_response_config
+    raw_response_config["save_enabled"] = save
+    if directory is not None:
+        raw_response_config["directory"] = directory
+    
+    # Create the directory if it doesn't exist and saving is enabled
+    if save and directory is not None:
+        import os
+        os.makedirs(directory, exist_ok=True)
+        logger.info(f"Raw responses will be saved to: {directory}")
+    elif save:
+        import os
+        os.makedirs(raw_response_config["directory"], exist_ok=True)
+        logger.info(f"Raw responses will be saved to: {raw_response_config['directory']}")
+    else:
+        logger.info("Raw response saving is disabled") 

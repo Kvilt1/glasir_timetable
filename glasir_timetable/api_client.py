@@ -21,8 +21,9 @@ import backoff # Using backoff decorator for retries
 
 from playwright.async_api import Page
 
-from glasir_timetable import logger
+from glasir_timetable import logger, raw_response_config
 from glasir_timetable.extractors.homework_parser import clean_homework_text, parse_homework_html_response_structured
+from glasir_timetable.utils.file_utils import save_raw_response
 from .session import AuthSessionManager
 from .utils.error_utils import handle_errors, GlasirScrapingError
 from .utils.param_utils import parse_dynamic_params
@@ -253,6 +254,14 @@ async def fetch_homework_for_lesson(
                 
                 if not response.text:
                     logger.warning("Empty response received")
+                    return None
+                
+                # Save raw response if enabled
+                if raw_response_config["save_enabled"]:
+                    # Construct filename using the agreed pattern
+                    timestamp = int(time.time())
+                    filename = f"raw_homework_lesson{lesson_id}_{timestamp}.html"
+                    save_raw_response(response.text, raw_response_config["directory"], filename)
                     
                 return response.text
             except httpx.ConnectError as e:
@@ -793,6 +802,13 @@ async def fetch_teacher_mapping(
             if not response.text:
                 logger.warning("Empty response received from teacher mapping request")
                 return {}
+            
+            # Save raw response if enabled
+            if raw_response_config["save_enabled"]:
+                # Construct filename using the agreed pattern
+                timestamp = int(time.time())
+                filename = f"raw_teachers_{timestamp}.html"
+                save_raw_response(response.text, raw_response_config["directory"], filename)
                 
             # Parse the HTML to extract teacher mapping
             return parse_teacher_map_html_response(response.text)
@@ -898,6 +914,14 @@ async def fetch_weeks_data(
             if not response.text:
                 logger.warning("Empty response received from weeks data request")
                 return {"weeks": [], "current_week": None}
+            
+            # Save raw response if enabled
+            if raw_response_config["save_enabled"]:
+                # Construct filename using the agreed pattern
+                timestamp = int(time.time())
+                v_param = v_override if v_override is not None else "0"
+                filename = f"raw_weeks_student{student_id}_v{v_param}_{timestamp}.html"
+                save_raw_response(response.text, raw_response_config["directory"], filename)
                 
             # Parse the HTML to extract weeks data
             return parse_weeks_html_response(response.text)
@@ -1130,6 +1154,13 @@ async def fetch_timetable_for_week(
                 if not response.text:
                     logger.warning("Empty response received from timetable request")
                     return None
+                
+                # Save raw response if enabled
+                if raw_response_config["save_enabled"]:
+                    # Construct filename using the agreed pattern
+                    timestamp = int(time.time())
+                    filename = f"raw_timetable_week{week_offset}_student{student_id}_{timestamp}.html"
+                    save_raw_response(response.text, raw_response_config["directory"], filename)
                     
                 return response.text
             except httpx.ConnectError as e:
@@ -1174,83 +1205,89 @@ async def fetch_timetables_for_weeks(
     cookies: Dict[str, str],
     student_id: str,
     week_offsets: List[int],
-    max_concurrent: int = 5,  # Limit concurrent requests for timetables
     lname_value: str = None,
-    timer_value: int = None
+    timer_value: int = None,
+    max_parallel: int = 5
 ) -> Dict[int, Optional[str]]:
     """
-    Fetch timetable HTML for multiple weeks concurrently.
-
-    Args:
-        cookies: Dictionary of cookies from the current browser session.
-        student_id: The student ID (GUID) for the current user.
-        week_offsets: A list of week offsets to fetch timetables for.
-        max_concurrent: Maximum number of concurrent requests.
-        lname_value: Optional dynamically extracted lname value.
-        timer_value: Optional timer value extracted from the page.
-
-    Returns:
-        A dictionary mapping each week_offset to its corresponding HTML timetable string,
-        or None if an error occurred for that specific week.
-    """
-    if not week_offsets:
-        return {}
-
-    semaphore = Semaphore(max_concurrent)
-    tasks = []
+    Fetch timetable HTML for multiple weeks in parallel using a connection pool.
     
-    # Reuse timer_value if provided, otherwise get a new one (consistent across requests)
-    current_timer_value = timer_value if timer_value is not None else int(time.time() * 1000)
-
-    for offset in week_offsets:
-        task = asyncio.create_task(
-            _fetch_single_timetable_with_semaphore(
-                semaphore=semaphore,
+    Args:
+        cookies: Dictionary of cookies from the current browser session
+        student_id: The student ID (GUID) for the current user
+        week_offsets: List of week offsets to fetch (0 = current week, 1 = next week, etc.)
+        lname_value: Optional dynamically extracted lname value
+        timer_value: Optional timer value extracted from the page
+        max_parallel: Maximum number of parallel requests
+        
+    Returns:
+        Dictionary mapping week offsets to HTML content
+    """
+    # Ensure unique week offsets
+    unique_offsets = list(set(week_offsets))
+    
+    if len(unique_offsets) != len(week_offsets):
+        logger.info(f"Removed {len(week_offsets) - len(unique_offsets)} duplicate week offsets from request")
+    
+    # Create a semaphore to limit concurrent requests
+    semaphore = Semaphore(max_parallel)
+    timetable_data = {}
+    
+    logger.info(f"Fetching timetables for {len(unique_offsets)} weeks with max concurrency {max_parallel}")
+    
+    # Define an async helper function for fetching a single week
+    async def fetch_week(week_offset):
+        async with semaphore:
+            html_content = await fetch_timetable_for_week(
                 cookies=cookies,
                 student_id=student_id,
-                week_offset=offset,
+                week_offset=week_offset,
                 lname_value=lname_value,
-                timer_value=current_timer_value # Use consistent timer value
+                timer_value=timer_value
             )
-        )
-        tasks.append(task)
-
-    logger.info(f"Fetching timetables for {len(week_offsets)} weeks with max concurrency {max_concurrent}")
+            return week_offset, html_content
+    
+    # Create tasks for all week offsets
+    tasks = [fetch_week(offset) for offset in unique_offsets]
+    
+    # Wait for all tasks to complete
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    logger.info("Finished fetching all specified weeks.")
-
-    timetable_data = {}
+    
+    # Process results
     for result in results:
         if isinstance(result, Exception):
-            logger.error(f"Error fetching timetable during concurrent fetch: {result}")
-            # Cannot easily map back to week_offset if an exception occurred *before* calling the helper
-            # Consider adding offset to exception context if needed later
-        elif result is not None:
+            logger.error(f"Error in parallel fetch: {result}")
+            continue
+        if isinstance(result, tuple) and len(result) == 2:
             offset, html_content = result
             timetable_data[offset] = html_content
         # Handle cases where the helper might return None or unexpected format (though it shouldn't)
         
     # Ensure all requested offsets are keys in the result, even if fetching failed
-    for offset in week_offsets:
+    for offset in unique_offsets:
         if offset not in timetable_data:
              timetable_data[offset] = None # Mark as failed/not found
 
-    return timetable_data 
+    return timetable_data
 
 async def extract_week_range(
     cookies: Dict[str, str],
     student_id: str,
     lname_value: str = None,
-    timer_value: int = None
+    timer_value: int = None,
+    v_override: str = None
 ) -> Tuple[int, int]:
     """
     Extract the minimum and maximum week offsets available in the timetable using API.
+    This function uses the dedicated week selector endpoint (fetch_weeks_data) instead of
+    parsing the timetable HTML.
     
     Args:
         cookies: Dictionary of cookies from current browser session
         student_id: The student ID (GUID) for the current user
         lname_value: Optional dynamically extracted lname value
         timer_value: Optional timer value extracted from the page
+        v_override: Optional override for the 'v' parameter to access different academic years
         
     Returns:
         tuple: (min_offset, max_offset) - the earliest and latest available week offsets
@@ -1259,33 +1296,30 @@ async def extract_week_range(
         ValueError: If no week offset values can be found in the API response
     """
     try:
-        # Fetch the current week timetable HTML
-        week_html = await fetch_timetable_for_week(
+        # Fetch the weeks data directly using the dedicated endpoint
+        weeks_data_response = await fetch_weeks_data(
             cookies=cookies,
             student_id=student_id,
-            week_offset=0,  # Current week
             lname_value=lname_value,
-            timer_value=timer_value
+            timer_value=timer_value,
+            v_override=v_override
         )
         
-        if not week_html:
-            logger.error("Failed to fetch timetable HTML from API")
-            raise ValueError("Failed to extract week offset range from timetable using API. Cannot determine available weeks.")
+        if not weeks_data_response:
+            logger.error("Failed to fetch weeks data from API")
+            raise ValueError("Failed to extract week offset range. Cannot fetch weeks data.")
         
-        # Parse the HTML to extract weeks info
-        weeks_data = parse_weeks_html_response(week_html)
-        
-        # Extract offsets from the parsed weeks data
-        if not weeks_data or "weeks" not in weeks_data or not weeks_data["weeks"]:
+        # Extract offsets from the weeks data
+        if "weeks" not in weeks_data_response or not weeks_data_response["weeks"]:
             logger.error("No valid weeks data found in API response")
-            raise ValueError("Failed to extract week offset range from timetable using API. No weeks data found.")
+            raise ValueError("Failed to extract week offset range. No weeks data found.")
         
         # Get all offsets and find min/max
-        offsets = [week.get("offset", 0) for week in weeks_data["weeks"] if "offset" in week]
+        offsets = [week.get("offset", 0) for week in weeks_data_response["weeks"] if "offset" in week]
         
         if not offsets:
             logger.error("No week offset values found in API response")
-            raise ValueError("Failed to extract week offset range from timetable using API. No offset values found.")
+            raise ValueError("Failed to extract week offset range. No offset values found.")
         
         min_offset = min(offsets)
         max_offset = max(offsets)

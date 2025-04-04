@@ -25,7 +25,7 @@ if __name__ == "__main__":
 # Now the imports will work both when run as a script and when imported as a module
 from tqdm import tqdm
 from playwright.async_api import async_playwright
-from glasir_timetable import logger, setup_logging, stats, update_stats, error_collection, get_error_summary, clear_errors, add_error
+from glasir_timetable import logger, setup_logging, stats, update_stats, error_collection, get_error_summary, clear_errors, add_error, configure_raw_responses
 from glasir_timetable.auth import login_to_glasir
 from glasir_timetable.cookie_auth import (
     check_and_refresh_cookies,
@@ -142,6 +142,8 @@ async def main():
                       help='Do not refresh cookies even if they are expired')
     parser.add_argument('--teacherupdate', action='store_true', help='Update the teacher mapping cache at the start of the script')
     parser.add_argument('--skip-timetable', action='store_true', help='Skip timetable extraction, useful when only updating teachers')
+    parser.add_argument('--save-raw-responses', action='store_true', help='Save raw API responses before parsing')
+    parser.add_argument('--raw-responses-dir', type=str, help='Directory to save raw API responses (default: glasir_timetable/raw_responses/)')
     args = parser.parse_args()
     
     # Configure logging based on command-line arguments
@@ -193,6 +195,9 @@ async def main():
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir, exist_ok=True)
         logger.debug(f"Created output directory: {args.output_dir}")
+    
+    # Configure raw response saving based on command-line arguments
+    configure_raw_responses(args.save_raw_responses, args.raw_responses_dir)
     
     # Check cookie expiration at startup
     if args.use_cookies:

@@ -1003,16 +1003,17 @@ class PlaywrightExtractionService(ExtractionService):
         # First check if we have student info stored in a file
         student_info_file = os.path.join("glasir_timetable", "student_info.json")
         
-        if os.path.exists(student_info_file):
-            try:
-                with open(student_info_file, 'r', encoding='utf-8') as f:
-                    stored_info = json.load(f)
-                if stored_info and "studentName" in stored_info and "class" in stored_info:
-                    logger.info(f"Using cached student info: {stored_info}")
-                    return stored_info
-            except Exception as e:
-                logger.error(f"Error reading student info from file: {e}")
-                # Continue with extraction
+        # --- DEBUG: Temporarily bypass cache check ---
+        # if os.path.exists(student_info_file):
+        #     try:
+        #         with open(student_info_file, 'r', encoding='utf-8') as f:
+        #             stored_info = json.load(f)
+        #         if stored_info and "studentName" in stored_info and "class" in stored_info:
+        #             logger.info(f"Using cached student info: {stored_info}")
+        #             return stored_info
+        #     except Exception as e:
+        #         logger.error(f"Error reading student info from file: {e}")
+        #         # Continue with extraction
         
         try:
             # Try to extract using DOM selectors
@@ -1036,6 +1037,8 @@ class PlaywrightExtractionService(ExtractionService):
                     "studentName": student_name if student_name != "" else "Unknown",
                     "class": class_name if class_name != "" else "Unknown"
                 }
+                
+                logger.info(f"[DEBUG] Extracted via JS: Name='{student_info['studentName']}', Class='{student_info['class']}'") # DEBUG LOG
                 
                 # Save the successfully extracted info to file for future use
                 if student_info["studentName"] != "Unknown" or student_info["class"] != "Unknown":
@@ -1066,6 +1069,7 @@ class PlaywrightExtractionService(ExtractionService):
                     "studentName": student_name,
                     "class": class_name
                 }
+                logger.info(f"[DEBUG] Extracted via General Regex: Name='{student_info['studentName']}', Class='{student_info['class']}'") # DEBUG LOG
                 
                 # Save the successfully extracted info to file for future use
                 if student_info["studentName"] != "Unknown" or student_info["class"] != "Unknown":
@@ -1096,6 +1100,7 @@ class PlaywrightExtractionService(ExtractionService):
                         "studentName": student_name,
                         "class": class_name
                     }
+                    logger.info(f"[DEBUG] Extracted via Timetable Regex: Name='{student_info['studentName']}', Class='{student_info['class']}'") # DEBUG LOG
                     
                     # Save the successfully extracted info to file for future use
                     try:

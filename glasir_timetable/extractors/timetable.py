@@ -11,7 +11,7 @@ import logging
 import asyncio
 from typing import Dict, List, Tuple, Any, Union, Optional
 from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 from tqdm.auto import tqdm
 
 from glasir_timetable.constants import (
@@ -114,7 +114,8 @@ async def extract_student_info(page):
             content = await page.content()
             
             # Check for pattern in the content (including HTML entities like &aelig;)
-            content_match = re.search(r"N&aelig;mingatímatalva:\s*([^,]+),\s*([^\s<]+)", content, re.IGNORECASE)
+            # Try enhanced Python regex first
+            content_match = re.search(r"<td[^>]*>\s*N[æ&aelig;]mingatímatalva:\s*([^,]+),\s*(\d+\w{1,3})(?=\s|<|$)", content, re.IGNORECASE)
             if content_match:
                 student_info = {
                     "student_name": content_match.group(1).strip(),
@@ -140,7 +141,7 @@ async def extract_student_info(page):
                 else:
                     logger.warning("Extracted student name/class but could not get student ID to save.")
 
-                return student_info
+                return student_info # Return immediately if Python regex succeeds
             
             # Try to find it in a heading element
             student_info = await page.evaluate('''() => {
@@ -219,46 +220,102 @@ async def extract_timetable_data(page, teacher_map, use_models=True):
     # Get HTML content from the page
     html_content = await page.content()
     
+    # Extract student information from the page
+    student_info = await extract_student_info(page)
+    
+    # Parse HTML content using the new function
+    timetable_data_dict, week_info, lesson_ids = await parse_timetable_html(
+        html_content=html_content,
+        teacher_map=teacher_map,
+        student_info=student_info
+    )
+    
+    return timetable_data_dict, week_info, lesson_ids
+
+async def parse_timetable_html(html_content: str, teacher_map: Dict[str, str], student_info: Optional[Dict[str, str]] = None) -> Tuple[Dict[str, Any], Dict[str, Any], List[str]]:
+    """
+    Parse timetable data from HTML content directly using BeautifulSoup.
+    This function enables processing pre-fetched HTML without requiring a live Playwright page.
+    
+    Args:
+        html_content: The HTML content as a string.
+        teacher_map: A dictionary mapping teacher initials to full names.
+        student_info: Optional pre-extracted student information. If None, a placeholder will be used.
+        
+    Returns:
+        tuple: A tuple containing (timetable_data_dict, week_info, homework_lesson_ids)
+               where homework_lesson_ids is a list of lesson IDs that have homework icons
+    """
+    logger.info("Parsing timetable HTML content...")
+    
     # Use BeautifulSoup to parse the HTML with lxml for better performance
     soup = BeautifulSoup(html_content, 'lxml')
     
     # Get the current year
     current_year = datetime.now().year
     
+    # Extract week number directly from the HTML - looking for UgeKnapValgt element
+    extracted_week_num = None
+    week_link = soup.find('a', class_='UgeKnapValgt')
+    if week_link:
+        week_text = week_link.get_text(strip=True)
+        # Extract number from "Vika XX" format
+        if week_text.startswith("Vika "):
+            try:
+                extracted_week_num = int(week_text.replace("Vika ", ""))
+                logger.info(f"Extracted week number from UgeKnapValgt: {extracted_week_num}")
+            except ValueError:
+                logger.error(f"Failed to parse week number from '{week_text}'")
+    
     # Find the timetable table
     table = soup.find('table', class_='time_8_16')
     if not table:
         raise Exception("Timetable table not found")
-
-    tbody = table.find('tbody')
-    if not tbody:
-        logger.info("Error: Could not find tbody within the table.")
-        return None, None, []
 
     # Extract date range directly from the HTML
     # Look for the date range pattern like "24.03.2025 - 30.03.2025"
     date_range_pattern = re.compile(r'(\d{2}\.\d{2}\.\d{4})\s*-\s*(\d{2}\.\d{2}\.\d{4})')
     date_range_text = None
     
-    # First try to find it near the table
-    table_parent = table.parent
-    if table_parent:
-        parent_text = table_parent.get_text()
-        date_range_match = date_range_pattern.search(parent_text)
-        if date_range_match:
-            date_range_text = date_range_match.group(0)
-            logger.info(f"Found date range in table parent: {date_range_text}")
-
-    # If not found, search in the whole document
+    # First look for the date range immediately after the week selector table
+    # Based on the HTML structure, it appears as text right after the week selector table
+    week_selector_table = soup.find('table', {'border': '1'})
+    if week_selector_table:
+        # Get the next sibling which should be a <br> tag, and then the text node with the date range
+        next_element = week_selector_table.next_sibling
+        if next_element and isinstance(next_element, NavigableString):
+            date_range_match = date_range_pattern.search(str(next_element))
+            if date_range_match:
+                date_range_text = date_range_match.group(0)
+                logger.info(f"Found date range after week selector table: {date_range_text}")
+        elif next_element and next_element.next_sibling:
+            # Sometimes there might be a <br> tag in between
+            date_range_match = date_range_pattern.search(str(next_element.next_sibling))
+            if date_range_match:
+                date_range_text = date_range_match.group(0)
+                logger.info(f"Found date range after week selector table (after <br>): {date_range_text}")
+    
+    # If still not found, fallback to the original search methods
     if not date_range_text:
-        # Try to find it in any element preceding the timetable
-        for element in soup.find_all(['p', 'div', 'span', 'br']):
-            if element.get_text():
-                date_range_match = date_range_pattern.search(element.get_text())
-                if date_range_match:
-                    date_range_text = date_range_match.group(0)
-                    logger.info(f"Found date range in document: {date_range_text}")
-                    break
+        # Try to find it near the table
+        table_parent = table.parent
+        if table_parent:
+            parent_text = table_parent.get_text()
+            date_range_match = date_range_pattern.search(parent_text)
+            if date_range_match:
+                date_range_text = date_range_match.group(0)
+                logger.info(f"Found date range in table parent: {date_range_text}")
+    
+        # If not found, search in the whole document
+        if not date_range_text:
+            # Try to find it in any element preceding the timetable
+            for element in soup.find_all(['p', 'div', 'span', 'br']):
+                if element.get_text():
+                    date_range_match = date_range_pattern.search(element.get_text())
+                    if date_range_match:
+                        date_range_text = date_range_match.group(0)
+                        logger.info(f"Found date range in document: {date_range_text}")
+                        break
     
     # Extract start and end dates if we found the range
     parsed_start_date = None
@@ -290,7 +347,8 @@ async def extract_timetable_data(page, teacher_map, use_models=True):
         first_date_obj = parsed_start_date
         logger.info(f"Using extracted start date for week calculation: {first_date_obj}")
 
-    rows = tbody.find_all('tr', recursive=False)
+    # Find rows directly within the table, not tbody
+    rows = table.find_all('tr', recursive=False)
 
     # Collection for lesson IDs with homework notes
     homework_lesson_ids = []
@@ -453,8 +511,27 @@ async def extract_timetable_data(page, teacher_map, use_models=True):
 
     # Calculate week information
     week_info = {}
-    if parsed_start_date and parsed_end_date:
-        # Use the extracted dates directly
+    
+    # Prioritize using directly extracted information
+    if extracted_week_num is not None and parsed_start_date and parsed_end_date:
+        # We have both the week number and date range directly from the HTML
+        # Format dates for the output
+        start_date_str = f"{parsed_start_date.year}.{parsed_start_date.month:02d}.{parsed_start_date.day:02d}"
+        end_date_str = f"{parsed_end_date.year}.{parsed_end_date.month:02d}.{parsed_end_date.day:02d}"
+        
+        # Create week key in the correct format for the JSON
+        week_key = f"Week {extracted_week_num}: {parsed_start_date.year}.{parsed_start_date.month:02d}.{parsed_start_date.day:02d} to {parsed_end_date.year}.{parsed_end_date.month:02d}.{parsed_end_date.day:02d}"
+        
+        week_info = {
+            "year": parsed_start_date.year,
+            "week_num": extracted_week_num,
+            "start_date": start_date_str,
+            "end_date": end_date_str,
+            "week_key": week_key
+        }
+        logger.info(f"Using fully extracted week info: {week_info}")
+    elif parsed_start_date and parsed_end_date:
+        # We have the date range but not the week number from the HTML
         # Calculate week number from the start date
         week_num = parsed_start_date.isocalendar()[1]
         
@@ -472,7 +549,7 @@ async def extract_timetable_data(page, teacher_map, use_models=True):
             "end_date": end_date_str,
             "week_key": week_key
         }
-        logger.info(f"Using extracted week info: {week_info}")
+        logger.info(f"Using partially extracted week info (dates only): {week_info}")
     elif first_date_obj:
         # Use calculated date information
         # Calculate week number
@@ -522,19 +599,24 @@ async def extract_timetable_data(page, teacher_map, use_models=True):
             "week_key": week_key
         }
         logger.warning(f"Using default week info (no dates found): {week_info}")
-
-    # Extract student information from the page
-    student_info = await extract_student_info(page)
+    
+    # Use provided student_info or create a placeholder
+    if student_info is None:
+        student_info = {
+            "student_name": "Unknown Student",
+            "class": "Unknown Class"
+        }
+        logger.warning("No student info provided. Using placeholder values.")
     
     # Convert student_info keys to camelCase
-    student_info = {
+    student_info_camel = {
         "studentName": student_info.get("student_name"),
         "class": student_info.get("class")
     }
     
     # Create the final timetable data structure
     timetable_data_dict = {
-        "studentInfo": student_info,
+        "studentInfo": student_info_camel,
         "events": all_events,
         "weekInfo": {
             "weekNumber": week_info.get("week_num"),
@@ -548,7 +630,7 @@ async def extract_timetable_data(page, teacher_map, use_models=True):
     
     # Log summary of extraction
     logger.info(f"Extracted {len(all_events)} events and found {len(homework_lesson_ids)} events with homework")
-    
+
     # Return the timetable dictionary, week info, and the list of lesson IDs with homework
     return timetable_data_dict, week_info, homework_lesson_ids
 

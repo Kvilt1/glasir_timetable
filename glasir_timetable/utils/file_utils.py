@@ -49,3 +49,33 @@ def save_json_data(
     except Exception as e:
         logger.error(f"Error saving data to {output_path}: {e}")
         return False 
+
+def save_raw_response(content: str, directory: str, filename: str) -> bool:
+    """
+    Save raw API response content to a file.
+    
+    Args:
+        content: Raw text content from the API response
+        directory: Directory to save the file in
+        filename: Filename to use for the saved file
+        
+    Returns:
+        bool: True if save was successful, False otherwise
+    """
+    try:
+        # Ensure the target directory exists
+        os.makedirs(directory, exist_ok=True)
+        
+        # Construct the full file path
+        file_path = os.path.join(directory, filename)
+        
+        # Write the content to the file
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+            
+        logger.debug(f"Raw response saved to {file_path}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error saving raw response to {file_path}: {e}")
+        return False 
