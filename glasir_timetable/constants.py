@@ -80,7 +80,7 @@ DEFAULT_LNAME_FALLBACK = "29"  # Fallback for lname if extraction fails
 DEFAULT_TIMER_FALLBACK = "0"   # Fallback for timer if extraction fails
 
 # File paths
-TEACHER_CACHE_FILE = "glasir_timetable/teacher_cache.json"
+TEACHER_CACHE_FILE = "glasir_timetable/accounts/global/teacher_cache.json"
 STUDENT_ID_FILE = "glasir_timetable/student-id.json"
 
 # Auth cookie file path

@@ -7,6 +7,15 @@ This package uses JavaScript-based navigation by default for faster and more
 reliable timetable extraction.
 """
 
+__all__ = [
+    "logger",
+    "add_error",
+    "get_error_summary",
+    "clear_errors",
+    "update_stats",
+    "configure_raw_responses",
+]
+
 __version__ = "1.1.0"
 
 import sys
@@ -37,8 +46,12 @@ error_config = {
 # Global configuration for raw response saving
 raw_response_config = {
     "save_enabled": False,
-    "directory": "glasir_timetable/raw_responses/"
+    "directory": "glasir_timetable/raw_responses/",
+    "save_request_details": False  # New flag to control saving request info
 }
+
+# Global counter for numbering saved raw responses during a script run
+raw_response_counter = 1
 
 # Statistics tracking
 stats = {
@@ -55,31 +68,26 @@ def setup_logging(level=logging.INFO):
     logger = logging.getLogger("glasir_timetable")
     logger.setLevel(level)
     
-    # Check if handlers already exist and remove them
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
-    
-    # Create a custom handler that uses tqdm.write for output
-    class TqdmLoggingHandler(logging.Handler):
-        def emit(self, record):
-            try:
-                msg = self.format(record)
-                from tqdm import tqdm
-                tqdm.write(msg)
-            except Exception:
-                self.handleError(record)
-    
-    # Create handler with formatting
-    console_handler = TqdmLoggingHandler()
-    console_handler.setLevel(level)
-    
-    # Create formatter
-    formatter = logging.Formatter('[%(asctime)s] %(levelname)s - %(message)s', 
-                                 datefmt='%Y-%m-%d %H:%M:%S')
-    console_handler.setFormatter(formatter)
-    
-    # Add handler to logger
-    logger.addHandler(console_handler)
+    # Only add handler if none exist to avoid duplicate logs
+    if not logger.handlers:
+        # Create a custom handler that uses tqdm.write for output
+        class TqdmLoggingHandler(logging.Handler):
+            def emit(self, record):
+                try:
+                    msg = self.format(record)
+                    from tqdm import tqdm
+                    tqdm.write(msg)
+                except Exception:
+                    self.handleError(record)
+        
+        console_handler = TqdmLoggingHandler()
+        console_handler.setLevel(level)
+        
+        formatter = logging.Formatter('[%(asctime)s] %(levelname)s - %(message)s', 
+                                     datefmt='%Y-%m-%d %H:%M:%S')
+        console_handler.setFormatter(formatter)
+        
+        logger.addHandler(console_handler)
     
     return logger
 
@@ -127,15 +135,17 @@ def update_stats(key, value=1, increment=True):
     else:
         stats[key] = value 
 
-def configure_raw_responses(save: bool, directory: str = None):
+def configure_raw_responses(save: bool, directory: str = None, save_request_details: bool = False):
     """Configure the raw response saving functionality.
     
     Args:
         save: Whether to save raw responses
         directory: Directory to save raw responses to (if None, uses default)
+        save_request_details: Whether to save request details along with responses
     """
     global raw_response_config
     raw_response_config["save_enabled"] = save
+    raw_response_config["save_request_details"] = save_request_details
     if directory is not None:
         raw_response_config["directory"] = directory
     
@@ -149,4 +159,4 @@ def configure_raw_responses(save: bool, directory: str = None):
         os.makedirs(raw_response_config["directory"], exist_ok=True)
         logger.info(f"Raw responses will be saved to: {raw_response_config['directory']}")
     else:
-        logger.info("Raw response saving is disabled") 
+        logger.info("Raw response saving is disabled")

@@ -11,7 +11,6 @@ from typing import Dict, Optional
 from bs4 import BeautifulSoup, Tag
 
 # Import fetch_teacher_mapping from api_client
-from glasir_timetable.api_client import fetch_teacher_mapping, parse_teacher_map_html_response
 from ..utils.error_utils import handle_errors, GlasirScrapingError
 from ..constants import TEACHER_CACHE_FILE
 
@@ -102,6 +101,9 @@ async def extract_teacher_map(page, use_cache=False, cache_path=None, cookies=No
     Returns:
         dict: A mapping of teacher initials to full names.
     """
+    # Import here to avoid circular import
+    from glasir_timetable.api_client import fetch_teacher_mapping, parse_teacher_map_html_response
+
     # Set default cache path if not provided
     if cache_path is None:
         module_dir = os.path.dirname(os.path.abspath(__file__))
@@ -409,4 +411,4 @@ async def navigate_to_teachers_page(page):
             
     except Exception as e:
         logger.error(f"General error in teacher page navigation: {e}")
-        return None 
+        return None

@@ -50,32 +50,78 @@ def save_json_data(
         logger.error(f"Error saving data to {output_path}: {e}")
         return False 
 
-def save_raw_response(content: str, directory: str, filename: str) -> bool:
+def save_raw_response(
+    content: str,
+    directory: str,
+    filename: str,
+    request_url: Optional[str] = None,
+    request_method: Optional[str] = None,
+    request_headers: Optional[Dict[str, Any]] = None,
+    request_payload: Optional[Union[Dict[str, Any], str]] = None
+) -> bool:
     """
-    Save raw API response content to a file.
+    Save raw API response content (and optionally request details) to a file.
     
     Args:
         content: Raw text content from the API response
         directory: Directory to save the file in
         filename: Filename to use for the saved file
+        request_url: Request URL (optional)
+        request_method: HTTP method (optional)
+        request_headers: Request headers (optional)
+        request_payload: Request payload/body (optional)
         
     Returns:
         bool: True if save was successful, False otherwise
     """
     try:
+        # Import global config and counter
+        from glasir_timetable import raw_response_config, raw_response_counter
+
+        # Prefix filename with call order number
+        prefix = f"{raw_response_counter}_"
+        if not filename.startswith(prefix):
+            filename = prefix + filename
+
+        # Increment the global counter
+        import glasir_timetable
+        glasir_timetable.raw_response_counter += 1
         # Ensure the target directory exists
         os.makedirs(directory, exist_ok=True)
         
-        # Construct the full file path
-        file_path = os.path.join(directory, filename)
+        from glasir_timetable import raw_response_config
         
-        # Write the content to the file
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(content)
+        save_request_details = raw_response_config.get("save_request_details", False)
+        include_request = save_request_details and request_url is not None
+        
+        # If including request info, save as JSON object
+        if include_request:
+            # Change extension to .json if not already
+            if not filename.endswith(".json"):
+                filename = filename.rsplit(".", 1)[0] + ".json" if "." in filename else filename + ".json"
+            file_path = os.path.join(directory, filename)
             
-        logger.debug(f"Raw response saved to {file_path}")
-        return True
+            data = {
+                "request": {
+                    "url": request_url,
+                    "method": request_method,
+                    "headers": request_headers,
+                    "payload": request_payload
+                },
+                "response": content
+            }
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            logger.debug(f"Raw request+response saved to {file_path}")
+            return True
+        else:
+            # Save plain response content as before
+            file_path = os.path.join(directory, filename)
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            logger.debug(f"Raw response saved to {file_path}")
+            return True
         
     except Exception as e:
         logger.error(f"Error saving raw response to {file_path}: {e}")
-        return False 
+        return False

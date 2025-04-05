@@ -118,18 +118,15 @@ async def main():
     from glasir_timetable import stats, update_stats, clear_errors
     clear_errors()  # Clear any errors from previous runs
     update_stats("start_time", time.time(), increment=False)
-    
+
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Extract timetable data from Glasir')
-    parser.add_argument('--username', type=str, help='Username for login (without @glasir.fo)')
-    parser.add_argument('--password', type=str, help='Password for login')
-    parser.add_argument('--credentials-file', type=str, default='glasir_timetable/credentials.json', help='JSON file with username and password')
     parser.add_argument('--weekforward', type=int, default=0, help='Number of weeks forward to extract')
     parser.add_argument('--weekbackward', type=int, default=0, help='Number of weeks backward to extract')
     parser.add_argument('--all-weeks', action='store_true', help='Extract all available weeks from all academic years')
     parser.add_argument('--output-dir', type=str, default='glasir_timetable/weeks', help='Directory to save output files')
     parser.add_argument('--headless', action='store_false', dest='headless', default=True, help='Run in non-headless mode (default: headless=True)')
-    parser.add_argument('--log-level', type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], 
+    parser.add_argument('--log-level', type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         default='INFO', help='Set the logging level')
     parser.add_argument('--log-file', type=str, help='Log to a file instead of console')
     parser.add_argument('--collect-error-details', action='store_true', help='Collect detailed error information')
@@ -138,14 +135,14 @@ async def main():
     parser.add_argument('--error-limit', type=int, default=100, help='Maximum number of errors to store per category')
     parser.add_argument('--use-cookies', action='store_true', default=True, help='Use cookie-based authentication when possible')
     parser.add_argument('--cookie-path', type=str, default='cookies.json', help='Path to save/load cookies')
-    parser.add_argument('--no-cookie-refresh', action='store_false', dest='refresh_cookies', default=True, 
+    parser.add_argument('--no-cookie-refresh', action='store_false', dest='refresh_cookies', default=True,
                       help='Do not refresh cookies even if they are expired')
     parser.add_argument('--teacherupdate', action='store_true', help='Update the teacher mapping cache at the start of the script')
     parser.add_argument('--skip-timetable', action='store_true', help='Skip timetable extraction, useful when only updating teachers')
     parser.add_argument('--save-raw-responses', action='store_true', help='Save raw API responses before parsing')
     parser.add_argument('--raw-responses-dir', type=str, help='Directory to save raw API responses (default: glasir_timetable/raw_responses/)')
     args = parser.parse_args()
-    
+
     # Configure logging based on command-line arguments
     log_level = getattr(logging, args.log_level)
     if args.log_file:
@@ -153,51 +150,52 @@ async def main():
         file_handler = logging.FileHandler(args.log_file)
         file_handler.setFormatter(logging.Formatter('[%(asctime)s] %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
         logger.addHandler(file_handler)
-    
+
     # Set the log level
     logger.setLevel(log_level)
     for handler in logger.handlers:
         handler.setLevel(log_level)
-    
-    # Load or prompt for credentials
-    credentials = {}
-    
-    # First check command line arguments
-    if args.username and args.password:
-        credentials["username"] = args.username
-        credentials["password"] = args.password
-        logger.info("Using credentials provided via command line arguments")
-        
-        # Save the credentials to file for future use
-        generate_credentials_file(args.credentials_file, args.username, args.password)
-    # Then try to load from credentials file
-    elif os.path.exists(args.credentials_file):
-        try:
-            with open(args.credentials_file, 'r') as f:
-                credentials = json.load(f)
-            logger.info(f"Loaded credentials from {args.credentials_file}")
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            logger.error(f"Error reading {args.credentials_file}: {e}")
-            credentials = prompt_for_credentials()
-            generate_credentials_file(args.credentials_file, credentials["username"], credentials["password"])
-    # If no credentials available, prompt user
-    else:
-        logger.info(f"No credentials file found at {args.credentials_file}")
-        credentials = prompt_for_credentials()
-        generate_credentials_file(args.credentials_file, credentials["username"], credentials["password"])
-    
-    # Check for required credentials
-    if "username" not in credentials or "password" not in credentials:
-        logger.error("Username and password must be provided")
-        return
-    
+
+    # ---- ACCOUNT SELECTION ----
+    from glasir_timetable import account_manager, constants
+    import glasir_timetable.student_utils as student_utils
+
+    selected_username = account_manager.interactive_account_selection()
+    account_path = os.path.join(os.path.dirname(__file__), "accounts", selected_username)
+
+    # Override cookie path to be per-account
+    args.cookie_path = os.path.join(account_path, "cookies.json")
+
+    # Override student ID file to be per-account (legacy code)
+    constants.STUDENT_ID_FILE = os.path.join(account_path, "student-id.json")
+
+    # Set student_utils to use per-account student-id.json
+    student_utils.set_student_id_path(os.path.join(account_path, "student-id.json"))
+
+    # Override output directory to be per-account weeks folder
+    args.output_dir = os.path.join(account_path, "weeks")
+
+    # Load credentials for this account
+    credentials = account_manager.load_account_data(selected_username, "credentials")
+    if not credentials or "username" not in credentials or "password" not in credentials:
+        print(f"No credentials found for account '{selected_username}'. Please enter them now.")
+        uname = input("Username (without @glasir.fo): ").strip()
+        import getpass
+        pwd = getpass.getpass("Password: ")
+        credentials = {"username": uname, "password": pwd}
+        account_manager.save_account_data(selected_username, "credentials", credentials)
+
     # Create output directory if it doesn't exist
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir, exist_ok=True)
         logger.debug(f"Created output directory: {args.output_dir}")
-    
+
     # Configure raw response saving based on command-line arguments
-    configure_raw_responses(args.save_raw_responses, args.raw_responses_dir)
+    configure_raw_responses(
+        args.save_raw_responses,
+        args.raw_responses_dir,
+        save_request_details=args.save_raw_responses  # Enable saving request details by default when saving raw responses
+    )
     
     # Check cookie expiration at startup
     if args.use_cookies:
@@ -297,137 +295,200 @@ async def main():
                     lname_value=lname_value,
                     timer_value=timer_value
                 )
-                
-                # If we're only updating the teacher cache, we can exit now
-                if args.teacherupdate and args.skip_timetable:
-                    logger.info("Teacher mapping updated. Skipping timetable extraction as requested.")
-                    return
-                
-                # Process all weeks if requested
-                if args.all_weeks:
-                    logger.info("Processing range of weeks using --all-weeks (dynamically determined)...")
-                    
-                    try:
-                        # Dynamically extract the available week range with API support
-                        min_offset, max_offset = await extract_min_max_week_offsets(
-                            page=page,
-                            api_cookies=api_cookies,
-                            student_id=student_id,
-                            lname_value=lname_value,
-                            timer_value=timer_value
-                        )
-                        
-                        # The extracted min_offset is negative (like -65) and max_offset is positive (like 15)
-                        # We need to set weekbackward to abs(min_offset) and weekforward to max_offset
-                        if args.weekforward == 0:  # Only override if not explicitly set
-                            args.weekforward = max_offset
-                        if args.weekbackward == 0:  # Only override if not explicitly set
-                            args.weekbackward = abs(min_offset)
-                        
-                        logger.info(f"Using dynamically determined range: {args.weekforward} weeks forward, {args.weekbackward} weeks backward")
-                    except ValueError as e:
-                        logger.error(f"{e} Cannot continue with --all-weeks option.")
-                        return  # Exit the script
-                
-                # Process specific weeks
-                if args.weekforward > 0 or args.weekbackward > 0:
-                    # Extract current week's timetable data
-                    logger.info("Extracting current week's timetable data...")
-                    
-                    # Extract current week's data with API approach
-                    logger.info("Using API-based implementation for extraction")
-                    
-                    # Extract current week's data with API approach
-                    timetable_data, week_info, _ = await navigate_and_extract_api(
-                        page, 0, teacher_map, api_cookies,
-                        lname_value=lname_value,
-                        timer_value=timer_value
-                    )
-                    
-                    # Check if we successfully retrieved the week info
-                    if not week_info:
-                        logger.error("Failed to retrieve week information. The page may need to be refreshed.")
-                        # Try to refresh the page and try again
-                        logger.info("Attempting to reload the page and retry...")
-                        await page.reload(wait_until="networkidle")
-                        await page.wait_for_timeout(2000)  # Wait an extra 2 seconds for stability
-                        
-                        # Try extraction once more
-                        timetable_data, week_info, _ = await navigate_and_extract_api(
-                            page, 0, teacher_map, api_cookies,
-                            lname_value=lname_value,
-                            timer_value=timer_value
-                        )
-                        
-                        if not week_info:
-                            logger.error("Still failed to retrieve week information after reload. Exiting.")
-                            return
-                    
-                    # Format filename with standardized format
-                    start_date = week_info['start_date']
-                    end_date = week_info['end_date']
-                    
-                    # Normalize dates and week number
-                    start_date, end_date = normalize_dates(start_date, end_date, week_info['year'])
-                    week_num = normalize_week_number(week_info['week_num'])
-                    
-                    # Generate filename
-                    filename = generate_week_filename(week_info['year'], week_num, start_date, end_date)
-                    output_path = os.path.join(args.output_dir, filename)
-                    
-                    # Save data to JSON file
-                    save_json_data(timetable_data, output_path)
-                    
-                    logger.info(f"Timetable data saved to {output_path}")
-                    
-                    # If additional weeks are requested, process them
-                    logger.info(f"Processing additional weeks: {args.weekforward} forward, {args.weekbackward} backward")
-                    
-                    # Get the week directions
-                    directions = await get_week_directions(args)
-                    
-                    # Process all requested weeks using API-based approach
-                    additional_results = await process_weeks(
-                        page=page,
-                        directions=directions,
-                        teacher_map=teacher_map,
-                        student_id=student_id,
-                        output_dir=args.output_dir,
-                        api_cookies=api_cookies,
-                        processed_weeks={week_info['week_num']} if week_info else set(),
-                        lname_value=lname_value,
-                        timer_value=timer_value
-                    )
+                processed_weeks = set()
+                # Determine week offsets to process
 
-            # Print summary of errors
-            error_summary = get_error_summary()
-            if error_summary:
-                logger.info("\nError Summary:")
-                for category, count in error_summary.items():
-                    logger.info(f"  {category}: {count}")
+    logger.info("DEBUG: Extraction call POINT A")
+    # Run API-only extraction for all weeks
+    # (Removed initial extraction to avoid double work)
+
+    logger.info(f"Finished processing {len(processed_weeks)} weeks")
+    
+    # If we're only updating the teacher cache, we can exit now
+    if args.teacherupdate and args.skip_timetable:
+        logger.info("Teacher mapping updated. Skipping timetable extraction as requested.")
+        return
+    
+    # Process all weeks if requested
+    logger.info("DEBUG: Extraction call POINT B - before dynamic range extraction")
+    
+    if args.all_weeks:
+        logger.info("Processing range of weeks using --all-weeks (dynamically determined)...")
+        
+        try:
+            # Dynamically extract the available week range with API support
+            min_offset, max_offset = await extract_min_max_week_offsets(
+                api_cookies=api_cookies,
+                student_id=student_id,
+                lname_value=lname_value,
+                timer_value=timer_value
+            )
             
-            # Calculate and log statistics
-            end_time = time.time()
-            start_time = stats.get("start_time", end_time)
-            elapsed = end_time - start_time
-            logger.info(f"Extraction completed in {elapsed:.2f} seconds")
+            # The extracted min_offset is negative (like -65) and max_offset is positive (like 15)
+            # We need to set weekbackward to abs(min_offset) and weekforward to max_offset
+            if args.weekforward == 0:  # Only override if not explicitly set
+                args.weekforward = max_offset
+            if args.weekbackward == 0:  # Only override if not explicitly set
+                args.weekbackward = abs(min_offset)
+            
+            logger.info(f"Using dynamically determined range: {args.weekforward} weeks forward, {args.weekbackward} weeks backward")
+    
+            directions = list(range(min_offset, max_offset + 1))
+    
+            processed_weeks = await process_weeks(
+                directions=directions,
+                teacher_map=teacher_map,
+                student_id=student_id,
+                output_dir=args.output_dir,
+                api_cookies=api_cookies,
+                lname_value=lname_value,
+                timer_value=timer_value
+            )
+            logger.info(f"Finished processing {len(processed_weeks)} weeks")
+    
+        except ValueError as e:
+            logger.error(f"{e} Cannot continue with --all-weeks option.")
+            return  # Exit the script
+    
+    # Process specific weeks only if --all-weeks is NOT used
+    if not args.all_weeks and (args.weekforward > 0 or args.weekbackward > 0):
+        # Extract current week's timetable data
+        logger.info("Extracting current week's timetable data...")
+        
+        # Extract current week's data with API approach
+        logger.info("Using API-based implementation for extraction")
+        
+        # Extract current week's data with API approach
+        timetable_data, week_info, _ = await navigate_and_extract_api(
+            page, 0, teacher_map, api_cookies,
+            lname_value=lname_value,
+            timer_value=timer_value
+        )
+        
+        # Check if we successfully retrieved the week info
+        if not week_info:
+            logger.error("Failed to retrieve week information. The page may need to be refreshed.")
+            # Try to refresh the page and try again
+            logger.info("Attempting to reload the page and retry...")
+            await page.reload(wait_until="networkidle")
+            await page.wait_for_timeout(2000)  # Wait an extra 2 seconds for stability
+            
+            # Try extraction once more
+            timetable_data, week_info, _ = await navigate_and_extract_api(
+                page, 0, teacher_map, api_cookies,
+                lname_value=lname_value,
+                timer_value=timer_value
+            )
+            
+            if not week_info:
+                logger.error("Still failed to retrieve week information after reload. Exiting.")
+                return
+        
+        # Format filename with standardized format
+        start_date = week_info['start_date']
+        end_date = week_info['end_date']
+        
+        # Normalize dates and week number
+        start_date, end_date = normalize_dates(start_date, end_date, week_info['year'])
+        week_num = normalize_week_number(week_info['week_num'])
+        
+        # Generate filename
+        filename = generate_week_filename(week_info['year'], week_num, start_date, end_date)
+        output_path = os.path.join(args.output_dir, filename)
+        
+        # Save data to JSON file
+        save_json_data(timetable_data, output_path)
+        
+        logger.info(f"Timetable data saved to {output_path}")
+        
+        # If additional weeks are requested, process them
+        logger.info(f"Processing additional weeks: {args.weekforward} forward, {args.weekbackward} backward")
+        
+        # Get the week directions
+        directions = await get_week_directions(args)
+        
+        # Process all requested weeks using API-based approach
+        additional_results = await process_weeks(
+            directions=directions,
+            teacher_map=teacher_map,
+            student_id=student_id,
+            output_dir=args.output_dir,
+            api_cookies=api_cookies,
+            processed_weeks={week_info['week_num']} if week_info else set(),
+            lname_value=lname_value,
+            timer_value=timer_value
+        )
 
-            # Check and report cookie expiration at the end
-            if args.use_cookies:
-                if hasattr(auth_service, "cookie_data") and auth_service.cookie_data:
-                    end_expiration_msg = estimate_cookie_expiration(auth_service.cookie_data)
-                    logger.info(f"Final cookie status: {end_expiration_msg}")
-                else:
-                    # Try to load cookies from file again
-                    end_cookie_data = load_cookies(args.cookie_path)
-                    if end_cookie_data:
-                        end_expiration_msg = estimate_cookie_expiration(end_cookie_data)
-                        logger.info(f"Final cookie status: {end_expiration_msg}")
+    # Print summary of errors
+    error_summary = get_error_summary()
+    if error_summary:
+        logger.info("\nError Summary:")
+        for category, count in error_summary.items():
+            logger.info(f"  {category}: {count}")
+    
+    # Calculate and log statistics
+    end_time = time.time()
+    start_time = stats.get("start_time", end_time)
+    elapsed = end_time - start_time
+    logger.info(f"Extraction completed in {elapsed:.2f} seconds")
 
-    # Execution completed
-    update_stats("end_time", time.time(), increment=False)
-    elapsed_time = stats.get("end_time", 0) - stats.get("start_time", 0)
-    logger.info(f"Execution completed in {elapsed_time:.2f} seconds")
+    # Check and report cookie expiration at the end
+    if args.use_cookies:
+        if hasattr(auth_service, "cookie_data") and auth_service.cookie_data:
+            end_expiration_msg = estimate_cookie_expiration(auth_service.cookie_data)
+            logger.info(f"Final cookie status: {end_expiration_msg}")
+        else:
+            # Try to load cookies from file again
+            end_cookie_data = load_cookies(args.cookie_path)
+            if end_cookie_data:
+                end_expiration_msg = estimate_cookie_expiration(end_cookie_data)
+                logger.info(f"Final cookie status: {end_expiration_msg}")
+
+# Execution completed
+update_stats("end_time", time.time(), increment=False)
+start_time = stats.get("start_time")
+end_time = stats.get("end_time")
+if start_time is None or end_time is None:
+    elapsed_time = 0.0
+else:
+    elapsed_time = end_time - start_time
+logger.info(f"Execution completed in {elapsed_time:.2f} seconds")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import argparse
+    import sys
+    import asyncio
+    import cProfile
+    import pstats
+    import io
+    from pathlib import Path
+
+    # Existing sys.path setup
+    parent_dir = Path(__file__).resolve().parent
+    if str(parent_dir) not in sys.path:
+        sys.path.insert(0, str(parent_dir))
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--profile", action="store_true", help="Enable profiling")
+    args, unknown = parser.parse_known_args()
+
+    sys.argv = [sys.argv[0]] + unknown  # Pass remaining args to main()
+
+    if args.profile:
+        profile_output = "profile_output.prof"
+        pr = cProfile.Profile()
+        pr.enable()
+
+        try:
+            asyncio.run(main())
+        finally:
+            pr.disable()
+            s = io.StringIO()
+            ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
+            ps.print_stats(30)
+            print("Profiling results (top 30 by cumulative time):")
+            print(s.getvalue())
+            ps.dump_stats(profile_output)
+            print(f"Full profile data saved to {profile_output}")
+    else:
+        asyncio.run(main())
