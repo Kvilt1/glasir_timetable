@@ -65,39 +65,50 @@ The project is structured into several layers:
 
 ```mermaid
 flowchart TD
-    subgraph Auth
-        A1[Playwright Login]
-        A2[Cookie Management]
-        A3[Account Manager]
-    end
-    subgraph API
-        B1[API Client (httpx)]
-        B2[Homework Fetch]
-        B3[Timetable Fetch]
-        B4[Teacher Map Fetch]
-    end
-    subgraph Services
-        S1[AuthenticationService]
-        S2[ExtractionService]
-        S3[NavigationService]
-        S4[FormattingService]
-        S5[StorageService]
-    end
-    subgraph Data
-        D1[Models (Pydantic)]
-        D2[Domain Entities]
-        D3[JSON Exports]
-    end
-    A1 --> A2 --> A3 --> S1
-    S1 --> B1
-    B1 --> B2
-    B1 --> B3
-    B1 --> B4
-    S2 --> B1
-    S3 --> B1
-    S4 --> D1
-    S4 --> D2
-    S5 --> D3
+
+  subgraph Auth
+    A1[Playwright Login]
+    A2[Cookie Management]
+    A3[Account Manager]
+  end
+
+  subgraph API
+    B1[API Client (httpx)]
+    B2[Homework Fetch]
+    B3[Timetable Fetch]
+    B4[Teacher Map Fetch]
+  end
+
+  subgraph Services
+    S1[AuthenticationService]
+    S2[ExtractionService]
+    S3[NavigationService]
+    S4[FormattingService]
+    S5[StorageService]
+  end
+
+  subgraph Data
+    D1[Models (Pydantic)]
+    D2[Domain Entities]
+    D3[JSON Exports]
+  end
+
+  A1 --> A2
+  A2 --> A3
+  A3 --> S1
+
+  S1 --> B1
+  B1 --> B2
+  B1 --> B3
+  B1 --> B4
+
+  S2 --> B1
+  S3 --> B1
+
+  S4 --> D1
+  S4 --> D2
+
+  S5 --> D3
 ```
 
 ---
