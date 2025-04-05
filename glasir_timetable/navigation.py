@@ -81,19 +81,36 @@ async def process_weeks(
         progress_bar = f"[{'=' * (percent // 5)}>{' ' * (20 - (percent // 5))}]"
         logger.info(f"Processing weeks: {progress_bar} {percent}% ({current}/{total}) {step_name}")
     
-    # Ensure directions are unique
-    directions = list(set(directions))
+    # Fetch week 0 timetable first to extract all week offsets dynamically
+    logger.info("Fetching week 0 timetable to extract all week offsets...")
+    week0_html = await fetch_timetable_for_week(
+        cookies=api_cookies,
+        student_id=student_id,
+        week_offset=0,
+        lname_value=lname_value,
+        timer_value=timer_value
+    )
+    if not week0_html:
+        logger.error("Failed to fetch week 0 timetable, cannot proceed with all weeks extraction.")
+        return processed_weeks
+
+    # Parse week offsets from the week 0 timetable HTML
+    import re
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(week0_html, "lxml")
+    week_links = soup.find_all("a", onclick=True)
+    offsets = set()
+    for link in week_links:
+        onclick = link.get("onclick", "")
+        match = re.search(r"v=(-?\d+)", onclick)
+        if match:
+            offsets.add(int(match.group(1)))
+    # Always include week 0
+    offsets.add(0)
+    all_week_offsets = sorted(offsets)
+    logger.info(f"Extracted {len(all_week_offsets)} week offsets from week 0 timetable: {all_week_offsets}")
     
-    # Sort directions from highest positive to largest negative value
-    directions.sort(reverse=True)
-    
-    # Add current week (offset 0) if it's not already in directions
-    all_week_offsets = [] 
-    if 0 not in directions:
-        all_week_offsets = [0]
-    all_week_offsets.extend(directions)
-    
-    # Only extract if not provided     
+    # Only extract if not provided
     logger.info(f"Using API-based approach with lname={lname_value}, timer={timer_value}")
     
     # PARALLEL FETCH: Get all timetable HTML content for all weeks at once
@@ -296,24 +313,34 @@ async def extract_min_max_week_offsets(api_cookies, student_id, lname_value, tim
         # Fallback: scan multiple academic years
         v_override_values = ["0", "-52", "52"]
         all_offsets = []
+    
+        import asyncio
+        tasks = []
         for v_value in v_override_values:
-            try:
-                min_off, max_off = await extract_week_range(
+            tasks.append(
+                extract_week_range(
                     cookies=api_cookies,
                     student_id=student_id,
                     lname_value=lname_value,
                     timer_value=timer_value,
                     v_override=v_value
                 )
-                if v_value == "-52":
-                    min_off -= 52
-                    max_off -= 52
-                elif v_value == "52":
-                    min_off += 52
-                    max_off += 52
-                all_offsets.extend(range(min_off, max_off + 1))
-            except Exception as inner_e:
-                logger.warning(f"Failed to get week range for v_override={v_value}: {inner_e}")
+            )
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+        for v_value, result in zip(v_override_values, results):
+            if isinstance(result, Exception):
+                logger.warning(f"Failed to get week range for v_override={v_value}: {result}")
+                continue
+            min_off, max_off = result
+            if v_value == "-52":
+                min_off -= 52
+                max_off -= 52
+            elif v_value == "52":
+                min_off += 52
+                max_off += 52
+            all_offsets.extend(range(min_off, max_off + 1))
+    
         if not all_offsets:
             raise ValueError("Failed to extract any week offsets via API fallback")
         return min(all_offsets), max(all_offsets)

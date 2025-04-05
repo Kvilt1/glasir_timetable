@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Utilities for handling student information such as student ID, name, and class.
+Supports per-account persistent storage of student info.
 """
 import os
 import json
@@ -190,4 +191,94 @@ async def get_student_id(page) -> Optional[str]:
         
     except Exception as e:
         logger.error(f"[DEBUG] Error extracting student ID: {e}")
+        return None
+
+
+def get_account_student_info_path(username: str) -> str:
+    """
+    Get the path to the student_info.json file for a given account.
+    """
+    base_dir = os.path.join("glasir_timetable", "accounts", username)
+    os.makedirs(base_dir, exist_ok=True)
+    return os.path.join(base_dir, "student_info.json")
+
+
+def load_student_info(username: str) -> Optional[dict]:
+    """
+    Load student info (id, name, class) for the given account.
+    Returns None if not found or invalid.
+    """
+    path = get_account_student_info_path(username)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        if all(k in data for k in ("id", "name", "class")):
+            return data
+    except Exception as e:
+        logger.error(f"Error loading student info for account '{username}': {e}")
+    return None
+
+
+def save_student_info(username: str, info: dict) -> None:
+    """
+    Save student info (id, name, class) for the given account.
+    """
+    path = get_account_student_info_path(username)
+    try:
+        with open(path, "w") as f:
+            json.dump(info, f, indent=4)
+        logger.info(f"Saved student info for account '{username}' to {path}")
+    except Exception as e:
+        logger.error(f"Error saving student info for account '{username}': {e}")
+
+
+async def extract_and_save_student_info(page, username: str) -> Optional[dict]:
+    """
+    Extract student info from the Playwright page and save it for the account.
+    If info already exists, load and return it.
+    """
+    existing = load_student_info(username)
+    if existing:
+        return existing
+
+    # Attempt extraction
+    try:
+        # Check if page is open
+        try:
+            _ = await page.title()
+        except Exception as e:
+            logger.error(f"Cannot access page to extract student info: {e}")
+            return None
+
+        # Extract name and class using JS
+        try:
+            student_name = await page.evaluate(
+                "document.querySelector('.main-content h1')?.textContent.trim() || 'Unknown'"
+            )
+            class_name = await page.evaluate(
+                "document.querySelector('.main-content p')?.textContent.match(/Class: ([^,]+)/)?.[1] || 'Unknown'"
+            )
+        except Exception as e:
+            logger.warning(f"Error extracting student name/class via JS: {e}")
+            student_name = "Unknown"
+            class_name = "Unknown"
+
+        # Extract student ID using existing function
+        student_id = await get_student_id(page)
+        if not student_id:
+            logger.error("Failed to extract student ID during student info extraction")
+            return None
+
+        info = {
+            "id": student_id,
+            "name": student_name,
+            "class": class_name
+        }
+        save_student_info(username, info)
+        return info
+
+    except Exception as e:
+        logger.error(f"Failed to extract and save student info for account '{username}': {e}")
         return None

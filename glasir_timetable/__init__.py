@@ -50,6 +50,9 @@ raw_response_config = {
     "save_request_details": False  # New flag to control saving request info
 }
 
+# Explicitly disable raw response saving by default for performance
+raw_response_config["save_enabled"] = False
+
 # Global counter for numbering saved raw responses during a script run
 raw_response_counter = 1
 

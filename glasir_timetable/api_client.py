@@ -39,6 +39,14 @@ from glasir_timetable.student_utils import get_student_id
 
 # Use the package-level logger for consistency
 
+# Global singleton async HTTP client with HTTP/2 enabled for connection reuse and multiplexing
+global_async_client = httpx.AsyncClient(
+    http2=True,
+    timeout=30.0,
+    follow_redirects=True,
+    verify=True
+)
+
 @handle_errors(default_return={}, error_category="parsing_teacher_map_html")
 def parse_teacher_map_html_response(html_content: str) -> Dict[str, str]:
     """
@@ -273,52 +281,36 @@ async def fetch_homework_for_lesson(
                 logger.error(f"HTTP error {e.response.status_code} for {api_url}: {e}")
                 return None
         else:
-            # Create a temporary client if none provided
-            async with httpx.AsyncClient(
-                cookies=cookies,
-                headers=headers,
-                follow_redirects=True,
-                timeout=30.0,
-                verify=True
-            ) as temp_client:
-                try:
-                    domain = GLASIR_BASE_URL.split("//")[1].split("/")[0]
-                    import socket
-                    socket.gethostbyname(domain)
-                except socket.gaierror:
-                    logger.error(f"DNS resolution failed for {domain}. Please check your network connection or DNS configuration.")
-                    return None
+            # Use the global async client instead of creating a new one
+            try:
+                domain = GLASIR_BASE_URL.split("//")[1].split("/")[0]
+                import socket
+                socket.gethostbyname(domain)
+            except socket.gaierror:
+                logger.error(f"DNS resolution failed for {domain}. Please check your network connection or DNS configuration.")
+                return None
 
-                try:
-                    response = await temp_client.post(api_url, data=params)
-                    response.raise_for_status()
+            response = await global_async_client.post(api_url, data=params, cookies=cookies, headers=headers)
+            response.raise_for_status()
 
-                    if not response.text:
-                        logger.warning("Empty response received")
-                        return None
+            if not response.text:
+                logger.warning("Empty response received")
+                return None
 
-                    if raw_response_config["save_enabled"]:
-                        timestamp = int(time.time())
-                        filename = f"raw_homework_lesson{lesson_id}_{timestamp}.html"
-                        save_raw_response(
-                            response.text,
-                            raw_response_config["directory"],
-                            filename,
-                            request_url=api_url,
-                            request_method="POST",
-                            request_headers=headers,
-                            request_payload=params
-                        )
+            if raw_response_config["save_enabled"]:
+                timestamp = int(time.time())
+                filename = f"raw_homework_lesson{lesson_id}_{timestamp}.html"
+                save_raw_response(
+                    response.text,
+                    raw_response_config["directory"],
+                    filename,
+                    request_url=api_url,
+                    request_method="POST",
+                    request_headers=headers,
+                    request_payload=params
+                )
 
-                    return response.text
-                except httpx.ConnectError as e:
-                    logger.error(f"Connection error for {api_url}: {e}")
-                    import traceback
-                    logger.error(f"Traceback: {traceback.format_exc()}")
-                    return None
-                except httpx.HTTPStatusError as e:
-                    logger.error(f"HTTP error {e.response.status_code} for {api_url}: {e}")
-                    return None
+            return response.text
     except Exception as e:
         logger.error(f"Error fetching homework for lesson {lesson_id}: {e}")
         import traceback
@@ -363,11 +355,13 @@ async def _process_lesson(
 async def fetch_homework_for_lessons(
     cookies: Dict[str, str],
     lesson_ids: List[str],
-    max_concurrent: int = 10,  # Limit concurrent requests to avoid overwhelming server
+    max_concurrent: int = 50,  # Increased concurrency default
     lname_value: str = None,
     timer_value: int = None,
     client: httpx.AsyncClient = None
 ) -> Dict[str, str]:
+    if client is None:
+        client = global_async_client
     """
     Fetch homework for multiple lessons using parallel requests with limited concurrency.
     
@@ -853,31 +847,30 @@ async def fetch_teacher_mapping(
             "Referer": f"{GLASIR_BASE_URL}/132n/"
         }
         
-        async with httpx.AsyncClient(cookies=cookies, headers=headers, follow_redirects=True, timeout=30.0) as client:
-            response = await client.post(api_url, data=params)
-            response.raise_for_status()
+        response = await global_async_client.post(api_url, data=params, cookies=cookies, headers=headers)
+        response.raise_for_status()
             
-            if not response.text:
-                logger.warning("Empty response received from teacher mapping request")
-                return {}
+        if not response.text:
+            logger.warning("Empty response received from teacher mapping request")
+            return {}
+        
+        # Save raw response if enabled
+        if raw_response_config["save_enabled"]:
+            # Construct filename using the agreed pattern
+            timestamp = int(time.time())
+            filename = f"raw_teachers_{timestamp}.html"
+            save_raw_response(
+                response.text,
+                raw_response_config["directory"],
+                filename,
+                request_url=api_url,
+                request_method="POST",
+                request_headers=headers,
+                request_payload=params
+            )
             
-            # Save raw response if enabled
-            if raw_response_config["save_enabled"]:
-                # Construct filename using the agreed pattern
-                timestamp = int(time.time())
-                filename = f"raw_teachers_{timestamp}.html"
-                save_raw_response(
-                    response.text,
-                    raw_response_config["directory"],
-                    filename,
-                    request_url=api_url,
-                    request_method="POST",
-                    request_headers=headers,
-                    request_payload=params
-                )
-                
-            # Parse the HTML to extract teacher mapping
-            return parse_teacher_map_html_response(response.text)
+        # Parse the HTML to extract teacher mapping
+        return parse_teacher_map_html_response(response.text)
             
     except Exception as e:
         logger.error(f"Error fetching teacher mapping: {e}")
@@ -973,32 +966,31 @@ async def fetch_weeks_data(
             "Referer": f"{base_url}/132n/"
         }
         
-        async with httpx.AsyncClient(cookies=cookies, headers=headers, follow_redirects=True, timeout=30.0) as client:
-            response = await client.post(api_url, data=params)
-            response.raise_for_status()
+        response = await global_async_client.post(api_url, data=params, cookies=cookies, headers=headers)
+        response.raise_for_status()
             
-            if not response.text:
-                logger.warning("Empty response received from weeks data request")
-                return {"weeks": [], "current_week": None}
+        if not response.text:
+            logger.warning("Empty response received from weeks data request")
+            return {"weeks": [], "current_week": None}
+        
+        # Save raw response if enabled
+        if raw_response_config["save_enabled"]:
+            # Construct filename using the agreed pattern
+            timestamp = int(time.time())
+            v_param = v_override if v_override is not None else "0"
+            filename = f"raw_weeks_student{student_id}_v{v_param}_{timestamp}.html"
+            save_raw_response(
+                response.text,
+                raw_response_config["directory"],
+                filename,
+                request_url=api_url,
+                request_method="POST",
+                request_headers=headers,
+                request_payload=params
+            )
             
-            # Save raw response if enabled
-            if raw_response_config["save_enabled"]:
-                # Construct filename using the agreed pattern
-                timestamp = int(time.time())
-                v_param = v_override if v_override is not None else "0"
-                filename = f"raw_weeks_student{student_id}_v{v_param}_{timestamp}.html"
-                save_raw_response(
-                    response.text,
-                    raw_response_config["directory"],
-                    filename,
-                    request_url=api_url,
-                    request_method="POST",
-                    request_headers=headers,
-                    request_payload=params
-                )
-                
-            # Parse the HTML to extract weeks data
-            return parse_weeks_html_response(response.text)
+        # Parse the HTML to extract weeks data
+        return parse_weeks_html_response(response.text)
             
     except Exception as e:
         logger.error(f"Error fetching weeks data: {e}")
@@ -1203,56 +1195,40 @@ async def fetch_timetable_for_week(
             "Referer": f"{GLASIR_BASE_URL}/132n/"
         }
         
-        # Create a more robust HTTP client with appropriate settings
-        async with httpx.AsyncClient(
-            cookies=cookies, 
-            headers=headers, 
-            follow_redirects=True, 
-            timeout=30.0,
-            verify=True      # Verify SSL certificates
-        ) as client:
-            # Add DNS resolution check
-            try:
-                # Attempt to resolve the hostname manually first
-                domain = GLASIR_BASE_URL.split("//")[1].split("/")[0]
-                import socket
-                socket.gethostbyname(domain)
-            except socket.gaierror:
-                logger.error(f"DNS resolution failed for {domain}. Please check your network connection or DNS configuration.")
-                return None
-                
-            try:
-                response = await client.post(api_url, data=params)
-                response.raise_for_status()
-                
-                if not response.text:
-                    logger.warning("Empty response received from timetable request")
-                    return None
-                
-                # Save raw response if enabled
-                if raw_response_config["save_enabled"]:
-                    # Construct filename using the agreed pattern
-                    timestamp = int(time.time())
-                    filename = f"raw_timetable_week{week_offset}_student{student_id}_{timestamp}.html"
-                    save_raw_response(
-                        response.text,
-                        raw_response_config["directory"],
-                        filename,
-                        request_url=api_url,
-                        request_method="POST",
-                        request_headers=headers,
-                        request_payload=params
-                    )
-                    
-                return response.text
-            except httpx.ConnectError as e:
-                logger.error(f"Connection error for {api_url}: {e}")
-                import traceback
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                return None
-            except httpx.HTTPStatusError as e:
-                logger.error(f"HTTP error {e.response.status_code} for {api_url}: {e}")
-                return None
+        # Use the global async client instead of creating a new one
+        # Add DNS resolution check
+        try:
+            # Attempt to resolve the hostname manually first
+            domain = GLASIR_BASE_URL.split("//")[1].split("/")[0]
+            import socket
+            socket.gethostbyname(domain)
+        except socket.gaierror:
+            logger.error(f"DNS resolution failed for {domain}. Please check your network connection or DNS configuration.")
+            return None
+            
+        response = await global_async_client.post(api_url, data=params, cookies=cookies, headers=headers)
+        response.raise_for_status()
+        
+        if not response.text:
+            logger.warning("Empty response received from timetable request")
+            return None
+        
+        # Save raw response if enabled
+        if raw_response_config["save_enabled"]:
+            # Construct filename using the agreed pattern
+            timestamp = int(time.time())
+            filename = f"raw_timetable_week{week_offset}_student{student_id}_{timestamp}.html"
+            save_raw_response(
+                response.text,
+                raw_response_config["directory"],
+                filename,
+                request_url=api_url,
+                request_method="POST",
+                request_headers=headers,
+                request_payload=params
+            )
+            
+        return response.text
             
     except Exception as e:
         logger.error(f"Error fetching timetable for week {week_offset}: {e}")
@@ -1289,7 +1265,7 @@ async def fetch_timetables_for_weeks(
     week_offsets: List[int],
     lname_value: str = None,
     timer_value: int = None,
-    max_parallel: int = 5
+    max_parallel: int = 50  # Increased concurrency default
 ) -> Dict[int, Optional[str]]:
     """
     Fetch timetable HTML for multiple weeks in parallel using a connection pool.
