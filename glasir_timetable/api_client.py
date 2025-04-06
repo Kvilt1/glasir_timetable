@@ -22,7 +22,15 @@ import backoff # Using backoff decorator for retries
 from playwright.async_api import Page
 
 from glasir_timetable import logger, raw_response_config
-from glasir_timetable.extractors.homework_parser import clean_homework_text, parse_homework_html_response_structured
+from glasir_timetable.extractors.homework_parser import (
+    clean_homework_text,
+    parse_homework_html_response_structured,
+    parse_single_homework_html,
+)
+from glasir_timetable.extractors.teacher_map import (
+    parse_teacher_map_html_response,
+    extract_teachers_from_html,
+)
 from glasir_timetable.utils.file_utils import save_raw_response
 from .session import AuthSessionManager
 from .utils.error_utils import handle_errors, GlasirScrapingError
@@ -47,82 +55,7 @@ global_async_client = httpx.AsyncClient(
     verify=True
 )
 
-@handle_errors(default_return={}, error_category="parsing_teacher_map_html")
-def parse_teacher_map_html_response(html_content: str) -> Dict[str, str]:
-    """
-    Parses the HTML response from the laerer.asp endpoint to extract the teacher map.
-
-    Args:
-        html_content: The HTML content string from the teacher map endpoint.
-
-    Returns:
-        A dictionary mapping teacher initials to full names. Returns {} on failure or if no teachers found.
-    """
-    if not html_content:
-        logger.warning("Received empty content for teacher map parsing.")
-        return {}
-
-    soup = BeautifulSoup(html_content, "lxml")
-    teacher_map = {}
-
-    try:
-        # First try the traditional select element approach
-        # Find the select element containing teacher options
-        select_element = soup.find("select")  # Assuming there's only one relevant select
-        if not select_element:
-            # Try finding by a known name attribute if ID is unreliable
-            select_element = soup.find("select", {"name": "laerer"})  # Example name
-            if not select_element:
-                logger.warning("Could not find the select element containing teacher options in HTML. Trying alternative extraction method.")
-                # Instead of raising an error, try the alternative approach
-                raise ValueError("Select element not found")
-
-        options = select_element.find_all("option")
-        if not options:
-            logger.warning("No teacher <option> tags found within the select element. Trying alternative extraction method.")
-            raise ValueError("No options found in select element")
-
-        for option in options:
-            if isinstance(option, Tag):
-                initials = option.get("value")
-                full_name = option.get_text(strip=True)
-
-                # Basic validation and cleanup
-                if initials and full_name and initials != "-1":  # Skip placeholder values
-                    # Sometimes the name might contain the initials e.g., "ABC - Anders B. Christensen"
-                    # Attempt to clean this up
-                    if f"{initials} -" in full_name:
-                        cleaned_name = full_name.split(f"{initials} -", 1)[-1].strip()
-                        if cleaned_name:  # Use cleaned name only if it's not empty
-                            full_name = cleaned_name
-                        else:  # If cleaning results in empty, keep original (edge case)
-                            logger.debug(f"Cleaning resulted in empty name for initials {initials}, keeping original: {full_name}")
-
-                    # Further cleanup: Remove potential "(initials)" suffix if present
-                    if full_name.endswith(f"({initials})"):
-                        full_name = full_name[:-len(f"({initials})")].strip()
-
-                    if initials in teacher_map and teacher_map[initials] != full_name:
-                        logger.warning(f"Duplicate teacher initials '{initials}' found with different names: '{teacher_map[initials]}' vs '{full_name}'. Keeping the latter.")
-                    teacher_map[initials] = full_name
-
-        if not teacher_map:
-            logger.warning("Parsed teacher map HTML but extracted no valid teacher entries. Trying alternative extraction method.")
-            raise ValueError("No teachers extracted from select element")
-        else:
-            logger.info(f"Successfully parsed {len(teacher_map)} teachers from HTML select element.")
-
-    except (ValueError, GlasirScrapingError):
-        # If the select element approach fails, try the alternative regex-based approach
-        logger.info("Trying alternative teacher extraction method using regex patterns.")
-        teacher_map = extract_teachers_from_html(html_content)
-        
-        if not teacher_map:
-            logger.warning("Alternative extraction method also failed to extract teacher information.")
-        else:
-            logger.info(f"Successfully extracted {len(teacher_map)} teachers using alternative method.")
-
-    return teacher_map
+# Removed parse_teacher_map_html_response. Use glasir_timetable.extractors.teacher_map instead.
 
 def extract_teachers_from_html(html_content: str) -> Dict[str, str]:
     """
@@ -345,7 +278,7 @@ async def _process_lesson(
                 cookies, lesson_id, lname_value, timer_value, client=client
             )
             if html_content:
-                homework_text = parse_individual_lesson_response(html_content)
+                homework_text = parse_single_homework_html(html_content)
                 return lesson_id, homework_text
         except Exception as e:
             logger.error(f"Error processing homework for lesson {lesson_id}: {e}")
@@ -395,87 +328,11 @@ async def fetch_homework_for_lessons(
     logger.info(f"Successfully fetched homework for {len(results)}/{len(lesson_ids)} lessons")
     return results
 
-def parse_individual_lesson_response(html_content: str) -> Optional[str]:
-    """
-    Parse the HTML response from a single lesson homework request.
-    
-    Args:
-        html_content: HTML string from the API response
-        
-    Returns:
-        Extracted homework text or None if not found
-    """
-    if not html_content:
-        return None
-        
-    try:
-        soup = BeautifulSoup(html_content, 'lxml')
-        
-        # Look for paragraphs with the white-space:pre-wrap style, which typically contains the homework
-        paragraphs = soup.find_all('p', style=lambda s: s and 'white-space:pre-wrap' in s)
-        
-        if paragraphs:
-            # Extract text from all relevant paragraphs
-            homework_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-            return clean_homework_text(homework_text)
-        
-        # Fallback: try to find any paragraphs inside the response
-        all_paragraphs = soup.find_all('p')
-        if all_paragraphs:
-            homework_text = "\n".join(p.get_text(strip=True) for p in all_paragraphs if p.get_text(strip=True))
-            return clean_homework_text(homework_text)
-            
-    except Exception as e:
-        logger.error(f"Error parsing individual lesson response: {e}")
-        
-    return None
+# Removed parse_individual_lesson_response.
+# Use glasir_timetable.extractors.homework_parser.parse_single_homework_html instead.
 
-def parse_homework_html_response(html_content: str) -> Dict[str, str]:
-    """
-    Parse the HTML response from the note.asp API to extract homework content.
-    This function is kept for backward compatibility with any code that may use it.
-    
-    Args:
-        html_content: HTML string from the API response
-        
-    Returns:
-        Dictionary mapping lesson IDs to their corresponding homework text
-    """
-    homework_map = {}
-    
-    if not html_content:
-        logger.warning("No HTML content to parse")
-        return homework_map
-        
-    try:
-        soup = BeautifulSoup(html_content, 'lxml')
-        
-        # Look for hidden input fields containing lesson and note IDs
-        lesson_inputs = soup.find_all('input', {'id': re.compile(r'^LektionsID')})
-        
-        # Process each lesson section
-        for lesson_input in lesson_inputs:
-            lesson_id = lesson_input.get('value')
-            if not lesson_id:
-                continue
-                
-            # Find the paragraph containing the homework text
-            # This is based on the observed structure in our tests
-            homework_paragraphs = soup.find_all('p', style=re.compile(r'white-space:pre-wrap'))
-            
-            for paragraph in homework_paragraphs:
-                # Extract the text content
-                homework_text = paragraph.get_text(strip=True)
-                if homework_text:
-                    homework_map[lesson_id] = homework_text
-                    break
-        
-        logger.info(f"Extracted homework for {len(homework_map)} lessons")
-        
-    except Exception as e:
-        logger.error(f"Error parsing homework HTML: {e}")
-        
-    return homework_map
+# Removed duplicate parse_homework_html_response.
+# Use glasir_timetable.extractors.homework_parser.parse_homework_html_response instead.
 
 async def analyze_lname_values(page) -> Dict[str, Any]:
     """
@@ -1527,7 +1384,9 @@ class ApiClient:
 
             if update_cache or not cache_exists:
                 from glasir_timetable.utils.teacher_api import fetch_and_extract_teachers
-                teacher_map = fetch_and_extract_teachers(update_cache=True)
+                from glasir_timetable.service_factory import _config
+                cookie_path = _config.get("cookie_file", "cookies.json")
+                teacher_map = fetch_and_extract_teachers(cookie_path=cookie_path, update_cache=True)
 
                 if teacher_map:
                     logger.info(f"Successfully extracted {len(teacher_map)} teachers, saving to cache")

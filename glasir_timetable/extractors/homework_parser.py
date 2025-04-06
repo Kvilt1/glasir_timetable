@@ -289,3 +289,39 @@ def clean_homework_text(text: str) -> str:
     cleaned = re.sub(r'<[^>]+>', '', cleaned)
     
     return cleaned
+
+
+def parse_single_homework_html(html_content: str) -> Optional[str]:
+    """
+    Parse the HTML response from a single lesson homework request.
+
+    Args:
+        html_content: HTML string from the API response
+
+    Returns:
+        Extracted homework text or None if not found
+    """
+    if not html_content:
+        return None
+
+    try:
+        soup = BeautifulSoup(html_content, 'lxml')
+
+        # Look for paragraphs with the white-space:pre-wrap style, which typically contains the homework
+        paragraphs = soup.find_all('p', style=lambda s: s and 'white-space:pre-wrap' in s)
+
+        if paragraphs:
+            # Extract text from all relevant paragraphs
+            homework_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+            return clean_homework_text(homework_text)
+
+        # Fallback: try to find any paragraphs inside the response
+        all_paragraphs = soup.find_all('p')
+        if all_paragraphs:
+            homework_text = "\n".join(p.get_text(strip=True) for p in all_paragraphs if p.get_text(strip=True))
+            return clean_homework_text(homework_text)
+
+    except Exception as e:
+        logger.error(f"Error parsing single lesson homework HTML: {e}")
+
+    return None

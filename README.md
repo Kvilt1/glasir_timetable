@@ -8,6 +8,8 @@ A powerful tool for extracting, processing, and exporting timetable data from Gl
 
 This application authenticates with Glasir's system, fetches timetable and homework data via internal APIs, and exports the data as structured JSON files. It supports parallel extraction, teacher mapping, and flexible week range selection.
 
+The tool uses a **hybrid approach** combining Playwright browser automation with direct API calls via httpx. It prioritizes fast, reliable API-based extraction, but gracefully falls back to Playwright-based scraping if needed. It caches teacher mappings and student info to speed up future runs. All data, cookies, and credentials are stored **per account** under dedicated directories, enabling seamless management of multiple user accounts.
+
 ---
 
 ## Features
@@ -22,6 +24,9 @@ This application authenticates with Glasir's system, fetches timetable and homew
 - **Robust error handling** and detailed logging
 - **CLI interface** with many options
 - **Docker support** for easy deployment
+- **Hybrid Playwright + API extraction** with intelligent fallback mechanisms
+- **Per-account data and cookie management** for multiple users
+- **Caching of teacher maps and student info** to optimize repeated runs
 
 ---
 
@@ -58,6 +63,8 @@ The project is structured into several layers:
 ### Configuration & Error Handling
 - Constants in `constants.py`
 - Error collection in `__init__.py`
+
+The architecture is built around a set of **service interfaces** (AuthenticationService, ExtractionService, NavigationService, etc.) with multiple implementations. The system prefers API-based extraction for speed and reliability, but automatically falls back to Playwright scraping if API calls fail. This layered, fallback-driven design ensures robust operation even if parts of the system change or fail.
 
 ---
 

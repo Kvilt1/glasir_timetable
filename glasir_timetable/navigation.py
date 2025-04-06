@@ -54,11 +54,12 @@ async def process_weeks(
     api_cookies,
     lname_value,
     timer_value,
-    processed_weeks=None
+    processed_weeks=None,
+    dynamic_range=False
 ):
     """
-    Process multiple weeks using API-based extraction with parallel fetching.
-    
+    Process multiple weeks using API-based extraction.
+
     Args:
         directions: List of week offsets to process
         teacher_map: Dictionary mapping teacher initials to full names
@@ -68,99 +69,81 @@ async def process_weeks(
         lname_value: Pre-extracted lname value for API requests (required)
         timer_value: Pre-extracted timer value for API requests (required)
         processed_weeks: Optional set of already processed week numbers
-        
+        dynamic_range: If True, dynamically extract all week offsets (default False)
+
     Returns:
         Set of processed week numbers
     """
     if processed_weeks is None:
         processed_weeks = set()
-        
-    # Define a progress logging function
-    def log_progress(current, total, step_name=""):
-        percent = int((current / total) * 100)
-        progress_bar = f"[{'=' * (percent // 5)}>{' ' * (20 - (percent // 5))}]"
-        logger.info(f"Processing weeks: {progress_bar} {percent}% ({current}/{total}) {step_name}")
-    
-    # Fetch week 0 timetable first to extract all week offsets dynamically
-    logger.info("Fetching week 0 timetable to extract all week offsets...")
-    week0_html = await fetch_timetable_for_week(
-        cookies=api_cookies,
-        student_id=student_id,
-        week_offset=0,
-        lname_value=lname_value,
-        timer_value=timer_value
-    )
-    if not week0_html:
-        logger.error("Failed to fetch week 0 timetable, cannot proceed with all weeks extraction.")
-        return processed_weeks
 
-    # Parse week offsets from the week 0 timetable HTML
-    import re
-    from bs4 import BeautifulSoup
-    soup = BeautifulSoup(week0_html, "lxml")
-    week_links = soup.find_all("a", onclick=True)
-    offsets = set()
-    for link in week_links:
-        onclick = link.get("onclick", "")
-        match = re.search(r"v=(-?\d+)", onclick)
-        if match:
-            offsets.add(int(match.group(1)))
-    # Always include week 0
-    offsets.add(0)
-    all_week_offsets = sorted(offsets)
-    logger.info(f"Extracted {len(all_week_offsets)} week offsets from week 0 timetable: {all_week_offsets}")
-    
-    # Only extract if not provided
-    logger.info(f"Using API-based approach with lname={lname_value}, timer={timer_value}")
-    
-    # PARALLEL FETCH: Get all timetable HTML content for all weeks at once
-    logger.info(f"Fetching timetable HTML for {len(all_week_offsets)} weeks in parallel...")
-    weeks_html_content = await fetch_timetables_for_weeks(
-        cookies=api_cookies,
-        student_id=student_id,
-        week_offsets=all_week_offsets,
-        lname_value=lname_value,
-        timer_value=timer_value,
-        max_parallel=20
-    )
-    logger.info(f"Completed parallel fetch: received data for {sum(1 for v in weeks_html_content.values() if v)} of {len(all_week_offsets)} weeks")
-    
-    # TODO: Pass student_info explicitly or fetch via API if possible
-    # For now, assume caller provides valid student_info
-    if not teacher_map:
-        logger.warning("Teacher map is empty or None, proceeding without teacher names")
-    student_info = {
-        "student_name": "Unknown",
-        "class": "Unknown"
-    }
+    if dynamic_range:
+        # Fetch week 0 timetable first to extract all week offsets dynamically
+        logger.info("Fetching week 0 timetable to extract all week offsets...")
+        week0_html = await fetch_timetable_for_week(
+            cookies=api_cookies,
+            student_id=student_id,
+            week_offset=0,
+            lname_value=lname_value,
+            timer_value=timer_value
+        )
+        if not week0_html:
+            logger.error("Failed to fetch week 0 timetable, cannot proceed with all weeks extraction.")
+            return processed_weeks
+
+        # Parse week offsets from the week 0 timetable HTML
+        import re
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(week0_html, "lxml")
+        week_links = soup.find_all("a", onclick=True)
+        offsets = set()
+        for link in week_links:
+            onclick = link.get("onclick", "")
+            match = re.search(r"v=(-?\d+)", onclick)
+            if match:
+                offsets.add(int(match.group(1)))
+        # Always include week 0
+        offsets.add(0)
+        week_offsets = sorted(offsets)
+        logger.info(f"Extracted {len(week_offsets)} week offsets from week 0 timetable: {week_offsets}")
+    else:
+        # Use the provided directions list
+        week_offsets = sorted(set(directions))
+        logger.info(f"Using provided week offsets: {week_offsets}")
 
     # Create a shared HTTP client for all homework fetches
     import httpx
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, verify=True) as shared_client:
-        # Now process each week sequentially using the pre-fetched HTML
-        total_weeks = len(all_week_offsets)
-        for idx, week_offset in enumerate(all_week_offsets):
-            log_progress(idx + 1, total_weeks, f"Processing week offset {week_offset}")
-            
-            # Check if we have HTML content for this week
-            html_content = weeks_html_content.get(week_offset)
-            if html_content is None:
-                logger.error(f"Failed to fetch HTML content for week offset {week_offset}")
-                continue
-            
+        total_weeks = len(week_offsets)
+        for idx, week_offset in enumerate(week_offsets):
+            logger.info(f"Processing week {idx+1}/{total_weeks} (offset {week_offset})")
             try:
-                # Directly parse the fetched HTML content
+                week_html = await fetch_timetable_for_week(
+                    cookies=api_cookies,
+                    student_id=student_id,
+                    week_offset=week_offset,
+                    lname_value=lname_value,
+                    timer_value=timer_value
+                )
+                if not week_html:
+                    logger.warning(f"No timetable HTML for week offset {week_offset}")
+                    continue
+
+                # Parse timetable HTML
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(week_html, "lxml")
+                # Placeholder: parse timetable data, week_info, lesson_ids
                 timetable_data, week_info, lesson_ids = await parse_timetable_html(
-                    html_content=html_content,
+                    html_content=week_html,
                     teacher_map=teacher_map,
-                    student_info=student_info
+                    student_info={"student_name": "Unknown", "class": "Unknown"}
                 )
 
                 if not timetable_data:
-                    logger.error(f"Failed to extract timetable data for week offset {week_offset}")
+                    logger.warning(f"No timetable data for week offset {week_offset}")
                     continue
-                    
-                # Fetch homework in parallel for this week's lessons
+
+                # Fetch homework for lessons
                 homework_map = {}
                 if api_cookies and lesson_ids:
                     homework_map = await fetch_homework_for_lessons(
@@ -171,65 +154,56 @@ async def process_weeks(
                         timer_value=timer_value,
                         client=shared_client
                     )
-                    
                     logger.info(f"Fetched homework for {len(homework_map)}/{len(lesson_ids)} lessons")
-                    
-                    # Add homework to timetable data
+
+                    # Merge homework into timetable data
                     merged_count = 0
                     for event in timetable_data.get("events", []):
                         lesson_id = event.get("lessonId")
                         if lesson_id and lesson_id in homework_map:
                             event["description"] = homework_map[lesson_id]
                             merged_count += 1
-                    
                     logger.info(f"Merged {merged_count} homework descriptions into events")
-                
+
                 # Normalize dates
                 if "weekInfo" in timetable_data and isinstance(timetable_data, dict):
                     week_info = timetable_data.get("weekInfo", {})
                     year = week_info.get("year")
                     start_date = week_info.get("startDate")
                     end_date = week_info.get("endDate")
-                    
                     if start_date and end_date and year:
                         start_date, end_date = normalize_dates(start_date, end_date, year)
                         week_info["startDate"] = start_date
                         week_info["endDate"] = end_date
                 else:
                     logger.warning("Skipping date normalization due to unknown format")
-                
+
                 if "weekInfo" in timetable_data and "weekNumber" in timetable_data["weekInfo"]:
                     timetable_data["weekInfo"]["weekNumber"] = normalize_week_number(timetable_data["weekInfo"]["weekNumber"])
-                
+
                 if "weekInfo" in timetable_data:
                     week_info_dict = timetable_data["weekInfo"]
                     year = week_info_dict.get("year", datetime.now().year)
                     week_num = week_info_dict.get("weekNumber", 0)
                     start_date = week_info_dict.get("startDate", "")
                     end_date = week_info_dict.get("endDate", "")
-                    
                     filename = generate_week_filename(year, week_num, start_date, end_date)
                     output_path = os.path.join(output_dir, filename)
-                    
                     week_id = f"{year}-W{week_num}-{start_date}"
-                    
                     if week_id in processed_weeks:
                         logger.info(f"Week {week_id} already processed, skipping")
                         continue
-                    
-                    
                     save_json_data(timetable_data, output_path)
-                    
                     processed_weeks.add(week_id)
                     logger.info(f"Week successfully exported: {filename}")
                 else:
-                    logger.error(f"Could not generate filename: weekInfo missing from timetable data for week offset {week_offset}")
-                    
+                    logger.warning(f"Could not generate filename: weekInfo missing for week offset {week_offset}")
+
             except Exception as e:
                 logger.error(f"Error processing week offset {week_offset}: {e}")
                 import traceback
                 logger.error(f"Traceback: {traceback.format_exc()}")
-    
+
     return processed_weeks
 
 

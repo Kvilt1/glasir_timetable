@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 Service interfaces for the Glasir Timetable application.
@@ -13,6 +14,7 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 from pathlib import Path
 import re
 from datetime import datetime
+import asyncio
 
 from playwright.async_api import Page
 
@@ -644,7 +646,8 @@ class PlaywrightNavigationService(NavigationService):
         """
         try:
             # First try to load from file
-            student_id_file = "student-id.json"
+            from glasir_timetable.student_utils import student_id_path
+            student_id_file = student_id_path
             if os.path.exists(student_id_file):
                 try:
                     with open(student_id_file, 'r') as f:
@@ -670,7 +673,7 @@ class PlaywrightNavigationService(NavigationService):
                     # Save for future use
                     try:
                         with open(student_id_file, 'w') as f:
-                            json.dump(student_id, f)
+                            json.dump({"id": student_id}, f, indent=4)
                         logger.info(f"Saved student ID to file: {student_id}")
                     except Exception as save_e:
                         logger.error(f"Error saving student ID to file: {save_e}")
@@ -703,18 +706,7 @@ class PlaywrightNavigationService(NavigationService):
             
             # FALLBACK: Use the known student ID from logs
             # This is a last resort if we can't extract it dynamically
-            hardcoded_id = "E79174A3-7D8D-4AA7-A8F7-D8C869E5FF36"
-            logger.warning(f"Using hardcoded student ID as fallback: {hardcoded_id}")
-            
-            # Save for future use
-            try:
-                with open(student_id_file, 'w') as f:
-                    json.dump(hardcoded_id, f)
-                logger.info(f"Saved hardcoded student ID to file: {hardcoded_id}")
-            except Exception as save_e:
-                logger.error(f"Error saving hardcoded student ID to file: {save_e}")
-            
-            return hardcoded_id
+            raise RuntimeError("Failed to extract student ID from page, file, or URL. Please log in and ensure your account is set up correctly.")
         except Exception as e:
             logger.error(f"Error getting student ID: {e}")
             # Return hardcoded ID even on exception

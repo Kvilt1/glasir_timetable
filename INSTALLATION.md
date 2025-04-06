@@ -56,6 +56,13 @@ python3 -m glasir_timetable.main --all-weeks
 
 ---
 
+### Per-Account Data Storage
+
+All credentials, cookies, student info, and exported timetable data are stored **per user account** inside `glasir_timetable/accounts/USERNAME/`. This allows you to manage multiple Glasir accounts independently, with separate login sessions and data exports for each user.
+
+
+---
+
 ## Advanced Configuration
 
 ### Cookie Authentication

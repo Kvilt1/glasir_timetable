@@ -17,6 +17,12 @@ def set_student_id_path(path: str):
     global student_id_path
     student_id_path = path
     logger.info(f"[DEBUG] Student ID path set to: {student_id_path}")
+def set_student_id_path_for_user(username: str):
+    """
+    Set the student_id_path global variable to the per-user student-id.json path.
+    """
+    path = os.path.join(os.path.dirname(__file__), "accounts", username, "student-id.json")
+    set_student_id_path(path)
 
 async def get_student_id(page) -> Optional[str]:
     """

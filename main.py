@@ -119,11 +119,13 @@ async def main():
     clear_errors()  # Clear any errors from previous runs
     update_stats("start_time", time.time(), increment=False)
 
+    print('DEBUG: sys.argv before parsing:', sys.argv)
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Extract timetable data from Glasir')
     parser.add_argument('--weekforward', type=int, default=0, help='Number of weeks forward to extract')
     parser.add_argument('--weekbackward', type=int, default=0, help='Number of weeks backward to extract')
     parser.add_argument('--all-weeks', action='store_true', help='Extract all available weeks from all academic years')
+    parser.add_argument('--forward', action='store_true', help='Extract only current and future weeks (positive offsets) dynamically')
     parser.add_argument('--output-dir', type=str, default='glasir_timetable/weeks', help='Directory to save output files')
     parser.add_argument('--headless', action='store_false', dest='headless', default=True, help='Run in non-headless mode (default: headless=True)')
     parser.add_argument('--log-level', type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
@@ -142,6 +144,13 @@ async def main():
     parser.add_argument('--save-raw-responses', action='store_true', help='Save raw API responses before parsing')
     parser.add_argument('--raw-responses-dir', type=str, help='Directory to save raw API responses (default: glasir_timetable/raw_responses/)')
     args = parser.parse_args()
+    
+    # If no log file provided, generate timestamped log file inside glasir_timetable/logs/
+    if not args.log_file:
+        log_dir = os.path.join("glasir_timetable", "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        args.log_file = os.path.join(log_dir, f"glasir_timetable_{timestamp}.log")
 
     # Configure logging based on command-line arguments
     log_level = getattr(logging, args.log_level)
@@ -161,19 +170,29 @@ async def main():
     import glasir_timetable.student_utils as student_utils
 
     selected_username = account_manager.interactive_account_selection()
-    account_path = os.path.join(os.path.dirname(__file__), "accounts", selected_username)
+    # Force account path inside the glasir_timetable package directory
+    account_path = os.path.join("glasir_timetable", "accounts", selected_username)
 
     # Override cookie path to be per-account
     args.cookie_path = os.path.join(account_path, "cookies.json")
 
     # Override student ID file to be per-account (legacy code)
     constants.STUDENT_ID_FILE = os.path.join(account_path, "student-id.json")
-
-    # Set student_utils to use per-account student-id.json
-    student_utils.set_student_id_path(os.path.join(account_path, "student-id.json"))
-
+    
+    # Set student_utils to use per-account student-id.json via helper
+    student_utils.set_student_id_path_for_user(selected_username)
+    
     # Override output directory to be per-account weeks folder
     args.output_dir = os.path.join(account_path, "weeks")
+    
+    # Also override the default cookie path in cookie_auth module
+    import glasir_timetable.cookie_auth as cookie_auth_module
+    cookie_auth_module.DEFAULT_COOKIE_PATH = args.cookie_path
+    
+    # Update service factory config to use per-account cookie file and storage dir
+    from glasir_timetable.service_factory import set_config
+    set_config("cookie_file", args.cookie_path)
+    set_config("storage_dir", args.output_dir)
 
     # Load credentials for this account
     credentials = account_manager.load_account_data(selected_username, "credentials")
@@ -314,27 +333,15 @@ async def main():
     
     if args.all_weeks:
         logger.info("Processing range of weeks using --all-weeks (dynamically determined)...")
-        
         try:
-            # Dynamically extract the available week range with API support
             min_offset, max_offset = await extract_min_max_week_offsets(
                 api_cookies=api_cookies,
                 student_id=student_id,
                 lname_value=lname_value,
                 timer_value=timer_value
             )
-            
-            # The extracted min_offset is negative (like -65) and max_offset is positive (like 15)
-            # We need to set weekbackward to abs(min_offset) and weekforward to max_offset
-            if args.weekforward == 0:  # Only override if not explicitly set
-                args.weekforward = max_offset
-            if args.weekbackward == 0:  # Only override if not explicitly set
-                args.weekbackward = abs(min_offset)
-            
-            logger.info(f"Using dynamically determined range: {args.weekforward} weeks forward, {args.weekbackward} weeks backward")
-    
+            logger.info(f"Using full dynamic range: {min_offset} to {max_offset}")
             directions = list(range(min_offset, max_offset + 1))
-    
             processed_weeks = await process_weeks(
                 directions=directions,
                 teacher_map=teacher_map,
@@ -342,82 +349,77 @@ async def main():
                 output_dir=args.output_dir,
                 api_cookies=api_cookies,
                 lname_value=lname_value,
-                timer_value=timer_value
+                timer_value=timer_value,
+                dynamic_range=True
             )
             logger.info(f"Finished processing {len(processed_weeks)} weeks")
-    
-        except ValueError as e:
-            logger.error(f"{e} Cannot continue with --all-weeks option.")
-            return  # Exit the script
-    
-    # Process specific weeks only if --all-weeks is NOT used
-    if not args.all_weeks and (args.weekforward > 0 or args.weekbackward > 0):
-        # Extract current week's timetable data
-        logger.info("Extracting current week's timetable data...")
-        
-        # Extract current week's data with API approach
-        logger.info("Using API-based implementation for extraction")
-        
-        # Extract current week's data with API approach
-        timetable_data, week_info, _ = await navigate_and_extract_api(
-            page, 0, teacher_map, api_cookies,
-            lname_value=lname_value,
-            timer_value=timer_value
-        )
-        
-        # Check if we successfully retrieved the week info
-        if not week_info:
-            logger.error("Failed to retrieve week information. The page may need to be refreshed.")
-            # Try to refresh the page and try again
-            logger.info("Attempting to reload the page and retry...")
-            await page.reload(wait_until="networkidle")
-            await page.wait_for_timeout(2000)  # Wait an extra 2 seconds for stability
-            
-            # Try extraction once more
-            timetable_data, week_info, _ = await navigate_and_extract_api(
-                page, 0, teacher_map, api_cookies,
+        except Exception as e:
+            logger.error(f"Error during --all-weeks extraction: {e}")
+            return
+
+    elif args.forward:
+        logger.info("Processing only current and future weeks (positive offsets) dynamically...")
+        try:
+            min_offset, max_offset = await extract_min_max_week_offsets(
+                api_cookies=api_cookies,
+                student_id=student_id,
                 lname_value=lname_value,
                 timer_value=timer_value
             )
-            
-            if not week_info:
-                logger.error("Still failed to retrieve week information after reload. Exiting.")
-                return
-        
-        # Format filename with standardized format
-        start_date = week_info['start_date']
-        end_date = week_info['end_date']
-        
-        # Normalize dates and week number
-        start_date, end_date = normalize_dates(start_date, end_date, week_info['year'])
-        week_num = normalize_week_number(week_info['week_num'])
-        
-        # Generate filename
-        filename = generate_week_filename(week_info['year'], week_num, start_date, end_date)
-        output_path = os.path.join(args.output_dir, filename)
-        
-        # Save data to JSON file
-        save_json_data(timetable_data, output_path)
-        
-        logger.info(f"Timetable data saved to {output_path}")
-        
-        # If additional weeks are requested, process them
-        logger.info(f"Processing additional weeks: {args.weekforward} forward, {args.weekbackward} backward")
-        
-        # Get the week directions
-        directions = await get_week_directions(args)
-        
-        # Process all requested weeks using API-based approach
-        additional_results = await process_weeks(
+            logger.info(f"Full dynamic range: {min_offset} to {max_offset}")
+            directions = [offset for offset in range(min_offset, max_offset + 1) if offset >= 0]
+            logger.info(f"Filtered to {len(directions)} current and future weeks: {directions}")
+            processed_weeks = await process_weeks(
+                directions=directions,
+                teacher_map=teacher_map,
+                student_id=student_id,
+                output_dir=args.output_dir,
+                api_cookies=api_cookies,
+                lname_value=lname_value,
+                timer_value=timer_value,
+                dynamic_range=False
+            )
+            logger.info(f"Finished processing {len(processed_weeks)} weeks")
+        except Exception as e:
+            logger.error(f"Error during --forward extraction: {e}")
+            return
+
+    elif args.weekforward > 0 or args.weekbackward > 0:
+        logger.info(f"Processing specified range: {args.weekbackward} weeks backward, {args.weekforward} weeks forward, always including current week (0)")
+        directions = set()
+        directions.add(0)
+        for i in range(1, args.weekforward + 1):
+            directions.add(i)
+        for i in range(1, args.weekbackward + 1):
+            directions.add(-i)
+        directions = sorted(directions)
+        logger.info(f"Week offsets to process: {directions}")
+        processed_weeks = await process_weeks(
             directions=directions,
             teacher_map=teacher_map,
             student_id=student_id,
             output_dir=args.output_dir,
             api_cookies=api_cookies,
-            processed_weeks={week_info['week_num']} if week_info else set(),
             lname_value=lname_value,
-            timer_value=timer_value
+            timer_value=timer_value,
+            dynamic_range=False
         )
+        logger.info(f"Finished processing {len(processed_weeks)} weeks")
+
+    else:
+        logger.info("No week range specified, processing current week only")
+        directions = [0]
+        processed_weeks = await process_weeks(
+            directions=directions,
+            teacher_map=teacher_map,
+            student_id=student_id,
+            output_dir=args.output_dir,
+            api_cookies=api_cookies,
+            lname_value=lname_value,
+            timer_value=timer_value,
+            dynamic_range=False
+        )
+        logger.info(f"Finished processing {len(processed_weeks)} weeks")
 
     # Print summary of errors
     error_summary = get_error_summary()

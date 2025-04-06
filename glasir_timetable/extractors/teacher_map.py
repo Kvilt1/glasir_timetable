@@ -1,3 +1,6 @@
+import sys
+print('DEBUG: teacher_map.py loaded, symbols:', dir())
+
 #!/usr/bin/env python3
 """
 Module for extracting teacher mapping from the Glasir timetable.
@@ -412,3 +415,134 @@ async def navigate_to_teachers_page(page):
     except Exception as e:
         logger.error(f"General error in teacher page navigation: {e}")
         return None
+
+
+@handle_errors(default_return={}, error_category="parsing_teacher_map_html")
+def parse_teacher_map_html_response(html_content: str) -> Dict[str, str]:
+    """
+    Parses the HTML response from the laerer.asp endpoint to extract the teacher map.
+
+    Args:
+        html_content: The HTML content string from the teacher map endpoint.
+
+    Returns:
+        A dictionary mapping teacher initials to full names. Returns {} on failure or if no teachers found.
+    """
+    if not html_content:
+        logger.warning("Received empty content for teacher map parsing.")
+        return {}
+
+    soup = BeautifulSoup(html_content, "lxml")
+    teacher_map = {}
+
+    try:
+        select_element = soup.find("select")
+        if not select_element:
+            select_element = soup.find("select", {"name": "laerer"})
+            if not select_element:
+                logger.warning("Could not find the select element containing teacher options in HTML. Trying alternative extraction method.")
+                raise ValueError("Select element not found")
+
+        options = select_element.find_all("option")
+        if not options:
+            logger.warning("No teacher <option> tags found within the select element. Trying alternative extraction method.")
+            raise ValueError("No options found in select element")
+
+        for option in options:
+            if isinstance(option, Tag):
+                initials = option.get("value")
+                full_name = option.get_text(strip=True)
+
+                if initials and full_name and initials != "-1":
+                    if f"{initials} -" in full_name:
+                        cleaned_name = full_name.split(f"{initials} -", 1)[-1].strip()
+                        if cleaned_name:
+                            full_name = cleaned_name
+                        else:
+                            logger.debug(f"Cleaning resulted in empty name for initials {initials}, keeping original: {full_name}")
+
+                    if full_name.endswith(f"({initials})"):
+                        full_name = full_name[:-len(f"({initials})")].strip()
+
+                    if initials in teacher_map and teacher_map[initials] != full_name:
+                        logger.warning(f"Duplicate teacher initials '{initials}' found with different names: '{teacher_map[initials]}' vs '{full_name}'. Keeping the latter.")
+                    teacher_map[initials] = full_name
+
+        if not teacher_map:
+            logger.warning("Parsed teacher map HTML but extracted no valid teacher entries. Trying alternative extraction method.")
+            raise ValueError("No teachers extracted from select element")
+        else:
+            logger.info(f"Successfully parsed {len(teacher_map)} teachers from HTML select element.")
+
+    except (ValueError, GlasirScrapingError):
+        logger.info("Trying alternative teacher extraction method using regex patterns.")
+        teacher_map = extract_teachers_from_html(html_content)
+
+        if not teacher_map:
+            logger.warning("Alternative extraction method also failed to extract teacher information.")
+        else:
+            logger.info(f"Successfully extracted {len(teacher_map)} teachers using alternative method.")
+
+    return teacher_map
+
+
+def extract_teachers_from_html(html_content: str) -> Dict[str, str]:
+    """
+    Extract teacher mapping from HTML content using regex patterns.
+    This is an alternative method when the select element approach fails.
+
+    Args:
+        html_content: The HTML content string to extract from.
+
+    Returns:
+        dict: A mapping of teacher initials to full names.
+    """
+    teacher_map = {}
+
+    try:
+        patterns = [
+            r'([^<>]+?)\s*\(\s*<a[^>]*?>([A-Z]{2,4})</a>\s*\)',
+            r'([^<>]+?)\s*\(\s*<a [^>]*?onclick="[^"]*?teach([A-Z]{2,4})[^"]*?"[^>]*?>([A-Z]{2,4})</a>\s*\)',
+            r'([^<>]+?)\s*\(\s*([A-Z]{2,4})\s*\)',
+            r'([^<>:]+?)\s*:\s*([A-Z]{2,4})'
+        ]
+
+        for pattern_index, pattern in enumerate(patterns):
+            matches = re.findall(pattern, html_content)
+
+            if pattern_index == 0:
+                for match in matches:
+                    full_name = match[0].strip()
+                    initials = match[1].strip()
+                    teacher_map[initials] = full_name
+            elif pattern_index == 1:
+                for match in matches:
+                    full_name = match[0].strip()
+                    initials = match[2].strip()
+                    if initials not in teacher_map:
+                        teacher_map[initials] = full_name
+            elif pattern_index == 2:
+                for match in matches:
+                    full_name = match[0].strip()
+                    initials = match[1].strip()
+                    if initials not in teacher_map:
+                        teacher_map[initials] = full_name
+            elif pattern_index == 3:
+                for match in matches:
+                    full_name = match[0].strip()
+                    initials = match[1].strip()
+                    if initials not in teacher_map:
+                        teacher_map[initials] = full_name
+
+            if len(teacher_map) >= 20:
+                logger.info(f"Found {len(teacher_map)} teachers using pattern {pattern_index+1}")
+                break
+
+        logger.info(f"Extracted a total of {len(teacher_map)} teachers from HTML using regex patterns")
+        return teacher_map
+
+    except Exception as e:
+        logger.error(f"Error extracting teachers from HTML: {e}")
+        return {}
+
+
