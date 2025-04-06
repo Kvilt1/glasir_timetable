@@ -80,7 +80,7 @@ flowchart TD
   end
 
   subgraph API
-    B1[API Client (httpx)]
+    B1[API Client - httpx]  // Changed this line
     B2[Homework Fetch]
     B3[Timetable Fetch]
     B4[Teacher Map Fetch]
