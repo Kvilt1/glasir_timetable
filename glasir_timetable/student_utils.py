@@ -26,177 +26,75 @@ def set_student_id_path_for_user(username: str):
 
 async def get_student_id(page) -> Optional[str]:
     """
-    Extract the student ID from the page.
-    
-    This function tries multiple methods to extract the student ID:
-    1. First checks if the ID is saved in student-id.json
-    2. Falls back to direct extraction from the page content
-    
+    Extract the student ID from the page or saved file.
+
+    - Checks if student-id.json exists and contains 'id', returns it if so.
+    - Otherwise, extracts GUID, name, and class from page content.
+    - Saves all three fields merged into the JSON file.
+    - Returns the ID or None.
+
     Args:
         page: The Playwright page object
-        
+
     Returns:
-        str: The student ID or None if not found
+        str or None
     """
     try:
-        logger.info(f"[DEBUG] Checking student-id.json path: {student_id_path}")
-        exists = os.path.exists(student_id_path)
-        logger.info(f"[DEBUG] Does student-id.json exist at this path? {exists}")
-        if exists:
+        # Check saved file first
+        if os.path.exists(student_id_path):
             try:
                 with open(student_id_path, 'r') as f:
                     data = json.load(f)
-                    # Support both old format (student_id) and new format (id)
-                    if data:
-                        if 'id' in data and data['id']:
-                            logger.info(f"[DEBUG] Loaded student ID from file: {data['id']}")
-                            return data['id']
-                        elif 'student_id' in data and data['student_id']:
-                            logger.info(f"[DEBUG] Loaded student ID from file (old format): {data['student_id']}")
-                            # If using old format, try to update to new format if we have name and class
-                            if 'name' in data and 'class' in data:
-                                try:
-                                    with open(student_id_path, 'w') as f:
-                                        json.dump({
-                                            'id': data['student_id'],
-                                            'name': data['name'],
-                                            'class': data['class']
-                                        }, f, indent=4)
-                                    logger.info(f"[DEBUG] Updated student-id.json to new format")
-                                except Exception as e:
-                                    logger.error(f"[DEBUG] Error updating student-id.json format: {e}")
-                            return data['student_id']
+                if data and 'id' in data and data['id']:
+                    logger.info(f"[DEBUG] (get_student_id) Loaded ID from file: {data['id']}")
+                    return data['id']
             except Exception as e:
-                logger.error(f"[DEBUG] Error loading student ID from file: {e}")
-                # Continue with extraction methods
-        
-        logger.info("[DEBUG] student-id.json not found or invalid, attempting extraction from page")
-        # Before accessing page, check if it is closed
-        try:
-            _ = await page.title()
-            logger.info("[DEBUG] Page appears to be open, proceeding with extraction")
-        except Exception as e:
-            logger.error(f"[DEBUG] Cannot access page, it may be closed: {e}")
-            return None
-        
-        # Try to extract from localStorage first
-        try:
-            local_storage = await page.evaluate("localStorage.getItem('StudentId')")
-            if local_storage:
-                student_id = local_storage.strip()
-                # Save the student ID for future use
-                try:
-                    existing_data = {}
-                    if os.path.exists(student_id_path):
-                        try:
-                            with open(student_id_path, 'r') as f:
-                                existing_data = json.load(f)
-                        except Exception:
-                            pass
-                    save_data = {'id': student_id}
-                    if existing_data and 'name' in existing_data and 'class' in existing_data:
-                        save_data['name'] = existing_data['name']
-                        save_data['class'] = existing_data['class']
-                    with open(student_id_path, 'w') as f:
-                        json.dump(save_data, f, indent=4)
-                    logger.info(f"[DEBUG] Saved student ID from localStorage to file: {student_id}")
-                except Exception as e:
-                    logger.error(f"[DEBUG] Error saving student ID from localStorage: {e}")
-                return student_id
-        except Exception:
-            pass
-        
-        # Try to find it in inputs or data attributes
-        try:
-            student_id = await page.evaluate("""() => {
-                const hiddenInput = document.querySelector('input[name="StudentId"]');
-                if (hiddenInput && hiddenInput.value) return hiddenInput.value;
-                const elemWithData = document.querySelector('[data-student-id]');
-                if (elemWithData) return elemWithData.getAttribute('data-student-id');
-                return null;
-            }""")
-        except Exception as e:
-            logger.error(f"[DEBUG] Error evaluating page for student ID inputs/data attributes: {e}")
-            return None
-        
-        if student_id:
-            student_id = student_id.strip()
-            try:
-                existing_data = {}
-                if os.path.exists(student_id_path):
-                    try:
-                        with open(student_id_path, 'r') as f:
-                            existing_data = json.load(f)
-                    except Exception:
-                        pass
-                save_data = {'id': student_id}
-                if existing_data and 'name' in existing_data and 'class' in existing_data:
-                    save_data['name'] = existing_data['name']
-                    save_data['class'] = existing_data['class']
-                with open(student_id_path, 'w') as f:
-                    json.dump(save_data, f, indent=4)
-                logger.info(f"[DEBUG] Saved student ID from inputs/data attributes to file: {student_id}")
-            except Exception as e:
-                logger.error(f"[DEBUG] Error saving student ID from inputs/data attributes: {e}")
-            return student_id
-        
-        # Try to find it in script tags or function calls
+                logger.warning(f"[DEBUG] (get_student_id) Failed to load ID from file: {e}")
+
+        # Extract from page content
         try:
             content = await page.content()
         except Exception as e:
-            logger.error(f"[DEBUG] Cannot get page content, page may be closed: {e}")
+            logger.error(f"[DEBUG] (get_student_id) Cannot get page content: {e}")
             return None
-        
-        match = re.search(r"MyUpdate\s*\(\s*['\"](\d+)['\"].*?,.*?['\"]([a-zA-Z0-9-]+)['\"]", content)
-        if match:
-            student_id = match.group(2).strip()
+
+        # Extract GUID
+        guid_match = re.search(r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}", content)
+        student_id = guid_match.group(0).strip() if guid_match else None
+
+        # Extract name and class
+        name_class_match = re.search(r"N[æ&aelig;]mingatímatalva:\s*([^,]+),\s*([^\s<]+)", content, re.IGNORECASE)
+        student_name = name_class_match.group(1).strip() if name_class_match else None
+        student_class = name_class_match.group(2).strip() if name_class_match else None
+
+        # Save merged info if ID found
+        if student_id:
             try:
-                existing_data = {}
+                existing = {}
                 if os.path.exists(student_id_path):
                     try:
                         with open(student_id_path, 'r') as f:
-                            existing_data = json.load(f)
+                            existing = json.load(f)
                     except Exception:
                         pass
-                save_data = {'id': student_id}
-                if existing_data and 'name' in existing_data and 'class' in existing_data:
-                    save_data['name'] = existing_data['name']
-                    save_data['class'] = existing_data['class']
+                merged = dict(existing) if isinstance(existing, dict) else {}
+                merged['id'] = student_id
+                if student_name:
+                    merged['name'] = student_name
+                if student_class:
+                    merged['class'] = student_class
                 with open(student_id_path, 'w') as f:
-                    json.dump(save_data, f, indent=4)
-                logger.info(f"[DEBUG] Saved student ID from script content to file: {student_id}")
+                    json.dump(merged, f, indent=4)
+                logger.info(f"[DEBUG] (get_student_id) Saved ID, name, class to file: {merged}")
             except Exception as e:
-                logger.error(f"[DEBUG] Error saving student ID from script content: {e}")
+                logger.warning(f"[DEBUG] (get_student_id) Failed to save ID/name/class: {e}")
             return student_id
-        
-        guid_pattern = r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}"
-        match = re.search(guid_pattern, content)
-        if match:
-            student_id = match.group(0).strip()
-            try:
-                existing_data = {}
-                if os.path.exists(student_id_path):
-                    try:
-                        with open(student_id_path, 'r') as f:
-                            existing_data = json.load(f)
-                    except Exception:
-                        pass
-                save_data = {'id': student_id}
-                if existing_data and 'name' in existing_data and 'class' in existing_data:
-                    save_data['name'] = existing_data['name']
-                    save_data['class'] = existing_data['class']
-                with open(student_id_path, 'w') as f:
-                    json.dump(save_data, f, indent=4)
-                logger.info(f"[DEBUG] Saved student ID from GUID pattern to file: {student_id}")
-            except Exception as e:
-                logger.error(f"[DEBUG] Error saving student ID from GUID pattern: {e}")
-            return student_id
-        
-        logger.warning("[DEBUG] Could not extract student ID from page using any method")
+
+        logger.warning("[DEBUG] (get_student_id) Could not extract student ID from page content")
         return None
-        
+
     except Exception as e:
-        logger.error(f"[DEBUG] Error extracting student ID: {e}")
+        logger.error(f"[DEBUG] (get_student_id) Unexpected error: {e}")
         return None
 
 
@@ -288,3 +186,75 @@ async def extract_and_save_student_info(page, username: str) -> Optional[dict]:
     except Exception as e:
         logger.error(f"Failed to extract and save student info for account '{username}': {e}")
         return None
+
+import re
+
+async def get_or_extract_student_info(page, weeks_html: str) -> dict:
+    """
+    Load student info (id, name, class) from per-account file if available.
+    If missing, extract from weeks API HTML response and save.
+
+    Args:
+        page: Playwright page object (for fallback ID extraction)
+        weeks_html: HTML response from weeks API (udvalg.asp)
+
+    Returns:
+        dict with keys 'id', 'name', 'class'
+    """
+    # Try load from file
+    info = None
+    try:
+        if os.path.exists(student_id_path):
+            with open(student_id_path, 'r') as f:
+                info = json.load(f)
+            if info and all(k in info and info[k] for k in ("id", "name", "class")):
+                logger.info(f"[DEBUG] Loaded student info from file: {info}")
+                return info
+    except Exception as e:
+        logger.warning(f"[DEBUG] Could not load student info from file: {e}")
+
+    # Extract student ID (reuse existing function)
+    student_id = None
+    try:
+        student_id = await get_student_id(page)
+    except Exception as e:
+        logger.warning(f"[DEBUG] Could not extract student ID: {e}")
+
+    # Parse weeks_html for name and class
+    student_name = None
+    student_class = None
+    try:
+        match = re.search(r"N[æ&aelig;]mingatímatalva:\s*([^,]+),\s*([^\s<]+)", weeks_html, re.IGNORECASE)
+        if match:
+            student_name = match.group(1).strip()
+            student_class = match.group(2).strip()
+            logger.info(f"[DEBUG] Extracted student name/class from weeks HTML: {student_name}, {student_class}")
+    except Exception as e:
+        logger.warning(f"[DEBUG] Could not parse weeks HTML for student info: {e}")
+
+    # Save if we have at least ID
+    info = {}
+    if student_id:
+        info['id'] = student_id
+    if student_name:
+        info['name'] = student_name
+    if student_class:
+        info['class'] = student_class
+
+    # Fill missing with "Unknown"
+    if 'name' not in info or not info['name']:
+        info['name'] = "Unknown"
+    if 'class' not in info or not info['class']:
+        info['class'] = "Unknown"
+
+    # Save to file if we have ID
+    if 'id' in info and info['id']:
+        try:
+            with open(student_id_path, 'w') as f:
+                json.dump(info, f, indent=4)
+            logger.info(f"[DEBUG] Saved student info to file: {info}")
+        except Exception as e:
+            logger.warning(f"[DEBUG] Could not save student info to file: {e}")
+
+    return info
+    return None

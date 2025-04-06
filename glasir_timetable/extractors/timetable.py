@@ -236,6 +236,8 @@ async def parse_timetable_html(html_content: str, teacher_map: Dict[str, str], s
     """
     Parse timetable data from HTML content directly using BeautifulSoup.
     This function enables processing pre-fetched HTML without requiring a live Playwright page.
+
+    Also extracts and persists student name and class dynamically.
     
     Args:
         html_content: The HTML content as a string.
@@ -247,6 +249,60 @@ async def parse_timetable_html(html_content: str, teacher_map: Dict[str, str], s
                where homework_lesson_ids is a list of lesson IDs that have homework icons
     """
     logger.info("Parsing timetable HTML content...")
+
+    # --- Extract and persist student info dynamically ---
+    try:
+        from glasir_timetable.student_utils import student_id_path
+        import json as _json
+        import re as _re
+        import os as _os
+
+        # Load existing info if any
+        info = {}
+        if _os.path.exists(student_id_path):
+            try:
+                with open(student_id_path, 'r') as f:
+                    info = _json.load(f)
+            except Exception:
+                info = {}
+
+        # Check if missing or unknown
+        missing = False
+        if "name" not in info or not info.get("name") or info.get("name") == "Unknown":
+            missing = True
+        if "class" not in info or not info.get("class") or info.get("class") == "Unknown":
+            missing = True
+
+        if missing:
+            match = _re.search(r"N[æ&aelig;]mingatímatalva:\s*([^,]+),\s*([^\s<]+)", html_content, _re.IGNORECASE)
+            if match:
+                extracted_name = match.group(1).strip()
+                extracted_class = match.group(2).strip()
+                logger.info(f"[DEBUG] Extracted student name/class from timetable HTML: {extracted_name}, {extracted_class}")
+                info["name"] = extracted_name
+                info["class"] = extracted_class
+                # Save back
+                try:
+                    with open(student_id_path, 'w') as f:
+                        _json.dump(info, f, indent=4)
+                    logger.info(f"[DEBUG] Saved updated student info to {student_id_path}")
+                except Exception as e:
+                    logger.warning(f"[DEBUG] Could not save updated student info: {e}")
+
+        # Update passed-in student_info dict if needed
+        if student_info is not None:
+            if "student_name" in student_info and (not student_info["student_name"] or student_info["student_name"] == "Unknown"):
+                student_info["student_name"] = info.get("name", "Unknown")
+            if "class" in student_info and (not student_info["class"] or student_info["class"] == "Unknown"):
+                student_info["class"] = info.get("class", "Unknown")
+        else:
+            # Create new dict
+            student_info = {
+                "student_name": info.get("name", "Unknown"),
+                "class": info.get("class", "Unknown")
+            }
+    except Exception as e:
+        logger.warning(f"[DEBUG] Could not extract/save student name/class from timetable HTML: {e}")
     
     # Use BeautifulSoup to parse the HTML with lxml for better performance
     soup = BeautifulSoup(html_content, 'lxml')

@@ -636,7 +636,7 @@ class PlaywrightNavigationService(NavigationService):
     
     async def get_student_id(self, page: Page) -> str:
         """
-        Extract the student ID from the page.
+        Extract the student ID, prioritizing per-account saved ID.
         
         Args:
             page: The Playwright page object
@@ -645,72 +645,18 @@ class PlaywrightNavigationService(NavigationService):
             str: Student ID GUID
         """
         try:
-            # First try to load from file
-            from glasir_timetable.student_utils import student_id_path
-            student_id_file = student_id_path
-            if os.path.exists(student_id_file):
-                try:
-                    with open(student_id_file, 'r') as f:
-                        data = json.load(f)
-                        if data and isinstance(data, str):
-                            # Clean up the student ID (remove curly braces if present)
-                            student_id = data.strip()
-                            if student_id.startswith('{') and student_id.endswith('}'): 
-                                student_id = student_id[1:-1]
-                            if student_id:
-                                logger.info(f"Loaded student ID from file: {student_id}")
-                                return student_id
-                except Exception as file_e:
-                    logger.error(f"Error loading student ID from file: {file_e}")
-            
-            # Try to extract from URL or page content
-            if "elevno=" in page.url:
-                match = re.search(r"elevno=([^&]+)", page.url)
-                if match:
-                    student_id = match.group(1)
-                    logger.info(f"Extracted student ID from URL: {student_id}")
-                    
-                    # Save for future use
-                    try:
-                        with open(student_id_file, 'w') as f:
-                            json.dump({"id": student_id}, f, indent=4)
-                        logger.info(f"Saved student ID to file: {student_id}")
-                    except Exception as save_e:
-                        logger.error(f"Error saving student ID to file: {save_e}")
-                        
-                    return student_id
-            
-            # Try to extract from page content using JavaScript
-            try:
-                from glasir_timetable.utils.error_utils import evaluate_js_safely
-                student_id = await evaluate_js_safely(
-                    page,
-                    "document.querySelector('input[name=\"elevno\"]')?.value || ''",
-                    error_message="Failed to extract student ID from input field"
-                )
-                
-                if student_id:
-                    logger.info(f"Extracted student ID from input field: {student_id}")
-                    
-                    # Save for future use
-                    try:
-                        with open(student_id_file, 'w') as f:
-                            json.dump(student_id, f)
-                        logger.info(f"Saved student ID to file: {student_id}")
-                    except Exception as save_e:
-                        logger.error(f"Error saving student ID to file: {save_e}")
-                        
-                    return student_id
-            except Exception as js_e:
-                logger.warning(f"Error extracting student ID using JavaScript: {js_e}")
-            
-            # FALLBACK: Use the known student ID from logs
-            # This is a last resort if we can't extract it dynamically
-            raise RuntimeError("Failed to extract student ID from page, file, or URL. Please log in and ensure your account is set up correctly.")
+            from glasir_timetable.student_utils import get_student_id as get_student_id_util
+            student_id = await get_student_id_util(page)
+            if student_id:
+                logger.info(f"[DEBUG] (PlaywrightNavigationService) Using student ID from student_utils: {student_id}")
+                return student_id
+            else:
+                logger.error("[DEBUG] (PlaywrightNavigationService) Could not extract student ID from student_utils, raising error")
+                raise RuntimeError("Failed to extract student ID from saved file or page content.")
         except Exception as e:
-            logger.error(f"Error getting student ID: {e}")
-            # Return hardcoded ID even on exception
-            return "E79174A3-7D8D-4AA7-A8F7-D8C869E5FF36"
+            logger.error(f"[DEBUG] (PlaywrightNavigationService) Error getting student ID: {e}")
+            # Do NOT fallback to hardcoded ID anymore
+            raise RuntimeError("Failed to extract student ID from saved file or page content.") from e
 
 class PlaywrightExtractionService(ExtractionService):
     """Extracts timetable, teacher and homework data using Playwright."""

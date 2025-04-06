@@ -91,6 +91,10 @@ def update_teacher_cache(teacher_map: Dict[str, str], cache_file: str = TEACHER_
         return
         
     try:
+        # Ensure the directory exists before saving
+        cache_dir = os.path.dirname(cache_file)
+        os.makedirs(cache_dir, exist_ok=True)
+
         # Load existing cache if it exists
         existing_map = {}
         if os.path.exists(cache_file):

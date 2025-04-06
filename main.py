@@ -80,6 +80,39 @@ from glasir_timetable.api_client import (
 from glasir_timetable.session import AuthSessionManager
 from glasir_timetable.utils.param_utils import parse_dynamic_params
 
+from glasir_timetable.cookie_auth import is_cookies_valid, load_cookies
+from glasir_timetable.student_utils import load_student_info
+
+def is_full_auth_data_valid(username, cookie_path):
+    """
+    Check if both cookies and student ID are valid for the given user.
+    Returns (is_valid: bool, student_info_dict: dict or None)
+    """
+    try:
+        cookie_data = load_cookies(cookie_path)
+        cookies_ok = is_cookies_valid(cookie_data)
+    except Exception:
+        cookies_ok = False
+
+    # Check student-id.json file directly
+    try:
+        student_id_path = os.path.join("glasir_timetable", "accounts", username, "student-id.json")
+        info = None
+        if os.path.exists(student_id_path):
+            import json
+            with open(student_id_path, "r") as f:
+                info = json.load(f)
+        id_ok = info is not None and "id" in info and info["id"]
+    except Exception:
+        info = None
+        id_ok = False
+
+    logger.info(f"[DEBUG] is_full_auth_data_valid: cookies_ok={cookies_ok}")
+    logger.info(f"[DEBUG] is_full_auth_data_valid: student_id_info={info}")
+    logger.info(f"[DEBUG] is_full_auth_data_valid: id_ok={id_ok}")
+
+    return (cookies_ok and id_ok), info
+
 def generate_credentials_file(file_path, username, password):
     """
     Generate a credentials file with the provided username and password.
@@ -111,6 +144,7 @@ def prompt_for_credentials():
     return {"username": username, "password": password}
 
 async def main():
+    auth_service = None  # Initialize to avoid UnboundLocalError
     """
     Main entry point for the Glasir Timetable application.
     """
@@ -223,203 +257,329 @@ async def main():
             expiration_msg = estimate_cookie_expiration(cookie_data)
             logger.info(f"Cookie status: {expiration_msg}")
     
-    # Initialize Playwright
-    async with async_playwright() as p:
-        # Setup resources with cleanup context
-        resources = {
-            "browser": None,
-            "context": None,
-            "page": None
-        }
-        
-        # Define cleanup functions
-        cleanup_funcs = {
-            "browser": lambda browser: browser.close()
-        }
-        
-        # Use async resource cleanup context manager
-        async with async_resource_cleanup_context(resources, cleanup_funcs):
-            # Initialize browser and page
-            resources["browser"] = await p.chromium.launch(headless=args.headless)
-            resources["context"] = await resources["browser"].new_context()
-            resources["page"] = await resources["context"].new_page()
-            page = resources["page"]
+    # Determine if we can skip Playwright entirely
+    api_only_mode = False
+    auth_valid, cached_student_info = is_full_auth_data_valid(selected_username, args.cookie_path)
+    if auth_valid:
+        api_only_mode = True
+        logger.info("All auth data valid, running in API-only mode, skipping Playwright.")
+    else:
+        logger.info("Auth data missing or expired, Playwright login required.")
+
+    if not api_only_mode:
+        # Initialize Playwright
+        async with async_playwright() as p:
+            # Setup resources with cleanup context
+            resources = {
+                "browser": None,
+                "context": None,
+                "page": None
+            }
             
-            # Register console listener
-            register_console_listener(page)
+            # Define cleanup functions
+            cleanup_funcs = {
+                "browser": lambda browser: browser.close()
+            }
             
-            # Configure error handling based on command-line arguments
-            configure_error_handling(
-                collect_details=args.collect_error_details,
-                collect_tracebacks=args.collect_tracebacks,
-                error_limit=args.error_limit
-            )
-            
-            # Get service instances from service factory with cookie configuration
-            set_config("use_cookie_auth", args.use_cookies)
-            set_config("cookie_file", args.cookie_path)
-            
-            # Create all services
-            services = create_services()
-            
-            # Get specific services
-            auth_service = services["auth"]
-            navigation_service = services["navigation"]
-            extraction_service = services["extraction"] 
-            api_client = services.get("api_client")
-            
-            # Log what services we're using
-            logger.info(f"Using cookie authentication: {args.use_cookies}")
-            
-            async with error_screenshot_context(page, "main", "general_errors", take_screenshot=args.enable_screenshots):
-                # Let the auth_service handle authentication (it will use cookies if configured)
-                login_success = await auth_service.login(
-                    credentials["username"], 
-                    credentials["password"], 
-                    page
+            # Use async resource cleanup context manager
+            async with async_resource_cleanup_context(resources, cleanup_funcs):
+                # Initialize browser and page
+                resources["browser"] = await p.chromium.launch(headless=args.headless)
+                resources["context"] = await resources["browser"].new_context()
+                resources["page"] = await resources["context"].new_page()
+                page = resources["page"]
+                
+                # Register console listener
+                register_console_listener(page)
+                
+                # Configure error handling based on command-line arguments
+                configure_error_handling(
+                    collect_details=args.collect_error_details,
+                    collect_tracebacks=args.collect_tracebacks,
+                    error_limit=args.error_limit
                 )
                 
-                if not login_success:
-                    logger.error("Authentication failed. Please check your credentials.")
-                    return
+                # Get service instances from service factory with cookie configuration
+                set_config("use_cookie_auth", args.use_cookies)
+                set_config("cookie_file", args.cookie_path)
                 
-                # Get API cookies if needed for older API methods not using the ApiClient
-                api_cookies = {}
-                if hasattr(auth_service, "get_requests_session") and callable(getattr(auth_service, "get_requests_session")):
-                    # We have a requests session with cookies
-                    logger.info("Using cookies from cookie authentication service")
-                    session = auth_service.get_requests_session()
-                    if session:
-                        api_cookies = dict(session.cookies)
-                else:
-                    # Fall back to extracting cookies from the browser
-                    browser_cookies = await page.context.cookies()
-                    api_cookies = {cookie['name']: cookie['value'] for cookie in browser_cookies}
+                # Create all services
+                services = create_services()
                 
-                logger.info(f"Using {len(api_cookies)} cookies for API requests")
+                # Get specific services
+                auth_service = services["auth"]
+                navigation_service = services["navigation"]
+                extraction_service = services["extraction"]
+                api_client = services.get("api_client")
                 
-                # Get basic info about the student and fetch key lname parameter
-                student_id = await navigation_service.get_student_id(page)
-                content = await page.content()
-                lname_value, timer_value = parse_dynamic_params(content)
-                logger.info(f"Student ID: {student_id}")
-                logger.info(f"lname value: {lname_value}")
-                logger.info(f"timer value: {timer_value}")
+                # Log what services we're using
+                logger.info(f"Using cookie authentication: {args.use_cookies}")
                 
-                # Extract dynamic teacher mapping using the extraction service
-                teacher_map = await extraction_service.extract_teacher_map(
-                    page, 
-                    force_update=args.teacherupdate,
-                    cookies=api_cookies,
-                    lname_value=lname_value,
-                    timer_value=timer_value
-                )
-                processed_weeks = set()
-                # Determine week offsets to process
+                async with error_screenshot_context(page, "main", "general_errors", take_screenshot=args.enable_screenshots):
+                    # Let the auth_service handle authentication (it will use cookies if configured)
+                    login_success = await auth_service.login(
+                        credentials["username"],
+                        credentials["password"],
+                        page
+                    )
+                    
+                    if not login_success:
+                        logger.error("Authentication failed. Please check your credentials.")
+                        return
+                    
+                    # Get API cookies if needed for older API methods not using the ApiClient
+                    api_cookies = {}
+                    if hasattr(auth_service, "get_requests_session") and callable(getattr(auth_service, "get_requests_session")):
+                        # We have a requests session with cookies
+                        logger.info("Using cookies from cookie authentication service")
+                        session = auth_service.get_requests_session()
+                        if session:
+                            api_cookies = dict(session.cookies)
+                    else:
+                        # Fall back to extracting cookies from the browser
+                        browser_cookies = await page.context.cookies()
+                        api_cookies = {cookie['name']: cookie['value'] for cookie in browser_cookies}
+                    
+                    logger.info(f"Using {len(api_cookies)} cookies for API requests")
+                    
+                    # Get basic info about the student and fetch key lname parameter
+                    student_id = await navigation_service.get_student_id(page)
+                    content = await page.content()
+                    lname_value, timer_value = parse_dynamic_params(content)
+                    logger.info(f"Student ID: {student_id}")
+                    logger.info(f"lname value: {lname_value}")
+                    logger.info(f"timer value: {timer_value}")
+                    
+                    # Extract dynamic teacher mapping using the extraction service
+                    teacher_map = await extraction_service.extract_teacher_map(
+                        page,
+                        force_update=args.teacherupdate,
+                        cookies=api_cookies,
+                        lname_value=lname_value,
+                        timer_value=timer_value
+                    )
+                    processed_weeks = set()
+                    # Determine week offsets to process
 
-    logger.info("DEBUG: Extraction call POINT A")
-    # Run API-only extraction for all weeks
-    # (Removed initial extraction to avoid double work)
+            logger.info("DEBUG: Extraction call POINT A")
+            # Run API-only extraction for all weeks
+            # (Removed initial extraction to avoid double work)
 
-    logger.info(f"Finished processing {len(processed_weeks)} weeks")
-    
-    # If we're only updating the teacher cache, we can exit now
-    if args.teacherupdate and args.skip_timetable:
-        logger.info("Teacher mapping updated. Skipping timetable extraction as requested.")
-        return
-    
-    # Process all weeks if requested
-    logger.info("DEBUG: Extraction call POINT B - before dynamic range extraction")
-    
-    if args.all_weeks:
-        logger.info("Processing range of weeks using --all-weeks (dynamically determined)...")
-        try:
-            min_offset, max_offset = await extract_min_max_week_offsets(
-                api_cookies=api_cookies,
-                student_id=student_id,
-                lname_value=lname_value,
-                timer_value=timer_value
-            )
-            logger.info(f"Using full dynamic range: {min_offset} to {max_offset}")
-            directions = list(range(min_offset, max_offset + 1))
-            processed_weeks = await process_weeks(
-                directions=directions,
-                teacher_map=teacher_map,
-                student_id=student_id,
-                output_dir=args.output_dir,
-                api_cookies=api_cookies,
-                lname_value=lname_value,
-                timer_value=timer_value,
-                dynamic_range=True
-            )
             logger.info(f"Finished processing {len(processed_weeks)} weeks")
-        except Exception as e:
-            logger.error(f"Error during --all-weeks extraction: {e}")
+            
+            # If we're only updating the teacher cache, we can exit now
+            if args.teacherupdate and args.skip_timetable:
+                logger.info("Teacher mapping updated. Skipping timetable extraction as requested.")
+                return
+            
+            # Process all weeks if requested
+            logger.info("DEBUG: Extraction call POINT B - before dynamic range extraction")
+            
+            if args.all_weeks:
+                logger.info("Processing range of weeks using --all-weeks (dynamically determined)...")
+                try:
+                    min_offset, max_offset = await extract_min_max_week_offsets(
+                        api_cookies=api_cookies,
+                        student_id=student_id,
+                        lname_value=lname_value,
+                        timer_value=timer_value
+                    )
+                    logger.info(f"Using full dynamic range: {min_offset} to {max_offset}")
+                    directions = list(range(min_offset, max_offset + 1))
+                    processed_weeks = await process_weeks(
+                        directions=directions,
+                        teacher_map=teacher_map,
+                        student_id=student_id,
+                        output_dir=args.output_dir,
+                        api_cookies=api_cookies,
+                        lname_value=lname_value,
+                        timer_value=timer_value,
+                        dynamic_range=True
+                    )
+                    logger.info(f"Finished processing {len(processed_weeks)} weeks")
+                except Exception as e:
+                    logger.error(f"Error during --all-weeks extraction: {e}")
+                    return
+
+            elif args.forward:
+                logger.info("Processing only current and future weeks (positive offsets) dynamically...")
+                try:
+                    min_offset, max_offset = await extract_min_max_week_offsets(
+                        api_cookies=api_cookies,
+                        student_id=student_id,
+                        lname_value=lname_value,
+                        timer_value=timer_value
+                    )
+                    logger.info(f"Full dynamic range: {min_offset} to {max_offset}")
+                    directions = [offset for offset in range(min_offset, max_offset + 1) if offset >= 0]
+                    logger.info(f"Filtered to {len(directions)} current and future weeks: {directions}")
+                    processed_weeks = await process_weeks(
+                        directions=directions,
+                        teacher_map=teacher_map,
+                        student_id=student_id,
+                        output_dir=args.output_dir,
+                        api_cookies=api_cookies,
+                        lname_value=lname_value,
+                        timer_value=timer_value,
+                        dynamic_range=False
+                    )
+                    logger.info(f"Finished processing {len(processed_weeks)} weeks")
+                except Exception as e:
+                    logger.error(f"Error during --forward extraction: {e}")
+                    return
+
+            elif args.weekforward > 0 or args.weekbackward > 0:
+                logger.info(f"Processing specified range: {args.weekbackward} weeks backward, {args.weekforward} weeks forward, always including current week (0)")
+                directions = set()
+                directions.add(0)
+                for i in range(1, args.weekforward + 1):
+                    directions.add(i)
+                for i in range(1, args.weekbackward + 1):
+                    directions.add(-i)
+                directions = sorted(directions)
+                logger.info(f"Week offsets to process: {directions}")
+                processed_weeks = await process_weeks(
+                    directions=directions,
+                    teacher_map=teacher_map,
+                    student_id=student_id,
+                    output_dir=args.output_dir,
+                    api_cookies=api_cookies,
+                    lname_value=lname_value,
+                    timer_value=timer_value,
+                    dynamic_range=False
+                )
+                logger.info(f"Finished processing {len(processed_weeks)} weeks")
+
+            else:
+                logger.info("No week range specified, processing current week only")
+                directions = [0]
+                processed_weeks = await process_weeks(
+                    directions=directions,
+                    teacher_map=teacher_map,
+                    student_id=student_id,
+                    output_dir=args.output_dir,
+                    api_cookies=api_cookies,
+                    lname_value=lname_value,
+                    timer_value=timer_value,
+                    dynamic_range=False
+                )
+                logger.info(f"Finished processing {len(processed_weeks)} weeks")
+    else:
+        # API-only mode branch
+        set_config("use_cookie_auth", True)
+        set_config("cookie_file", args.cookie_path)
+        services = create_services()
+        extraction_service = services["extraction"]
+        api_client = services.get("api_client")
+
+        # Load cookies dict for API calls
+        cookie_data = load_cookies(args.cookie_path)
+        api_cookies = {cookie['name']: cookie['value'] for cookie in cookie_data['cookies']} if cookie_data else {}
+
+        # Load student info
+        student_id = cached_student_info.get("id") if cached_student_info else None
+        if not student_id:
+            logger.error("Student ID missing in saved info, cannot proceed with API-only mode.")
             return
 
-    elif args.forward:
-        logger.info("Processing only current and future weeks (positive offsets) dynamically...")
+        # Extract teacher map via API
         try:
-            min_offset, max_offset = await extract_min_max_week_offsets(
-                api_cookies=api_cookies,
-                student_id=student_id,
-                lname_value=lname_value,
-                timer_value=timer_value
-            )
-            logger.info(f"Full dynamic range: {min_offset} to {max_offset}")
-            directions = [offset for offset in range(min_offset, max_offset + 1) if offset >= 0]
-            logger.info(f"Filtered to {len(directions)} current and future weeks: {directions}")
+            teacher_map = await api_client.fetch_teacher_map(student_id, update_cache=args.teacherupdate)
+        except Exception as e:
+            logger.error(f"Failed to fetch teacher map via API: {e}")
+            teacher_map = {}
+
+        # Extract min/max week offsets dynamically if requested
+        processed_weeks = set()
+        if args.all_weeks:
+            logger.info("Processing range of weeks using --all-weeks (dynamically determined)...")
+            try:
+                min_offset, max_offset = await extract_min_max_week_offsets(
+                    api_cookies=api_cookies,
+                    student_id=student_id,
+                    lname_value=None,
+                    timer_value=None
+                )
+                logger.info(f"Using full dynamic range: {min_offset} to {max_offset}")
+                directions = list(range(min_offset, max_offset + 1))
+                processed_weeks = await process_weeks(
+                    directions=directions,
+                    teacher_map=teacher_map,
+                    student_id=student_id,
+                    output_dir=args.output_dir,
+                    api_cookies=api_cookies,
+                    lname_value=None,
+                    timer_value=None,
+                    dynamic_range=True
+                )
+                logger.info(f"Finished processing {len(processed_weeks)} weeks")
+            except Exception as e:
+                logger.error(f"Error during --all-weeks extraction: {e}")
+                return
+
+        elif args.forward:
+            logger.info("Processing only current and future weeks (positive offsets) dynamically...")
+            try:
+                min_offset, max_offset = await extract_min_max_week_offsets(
+                    api_cookies=api_cookies,
+                    student_id=student_id,
+                    lname_value=None,
+                    timer_value=None
+                )
+                logger.info(f"Full dynamic range: {min_offset} to {max_offset}")
+                directions = [offset for offset in range(min_offset, max_offset + 1) if offset >= 0]
+                logger.info(f"Filtered to {len(directions)} current and future weeks: {directions}")
+                processed_weeks = await process_weeks(
+                    directions=directions,
+                    teacher_map=teacher_map,
+                    student_id=student_id,
+                    output_dir=args.output_dir,
+                    api_cookies=api_cookies,
+                    lname_value=None,
+                    timer_value=None,
+                    dynamic_range=False
+                )
+                logger.info(f"Finished processing {len(processed_weeks)} weeks")
+            except Exception as e:
+                logger.error(f"Error during --forward extraction: {e}")
+                return
+
+        elif args.weekforward > 0 or args.weekbackward > 0:
+            logger.info(f"Processing specified range: {args.weekbackward} weeks backward, {args.weekforward} weeks forward, always including current week (0)")
+            directions = set()
+            directions.add(0)
+            for i in range(1, args.weekforward + 1):
+                directions.add(i)
+            for i in range(1, args.weekbackward + 1):
+                directions.add(-i)
+            directions = sorted(directions)
+            logger.info(f"Week offsets to process: {directions}")
             processed_weeks = await process_weeks(
                 directions=directions,
                 teacher_map=teacher_map,
                 student_id=student_id,
                 output_dir=args.output_dir,
                 api_cookies=api_cookies,
-                lname_value=lname_value,
-                timer_value=timer_value,
+                lname_value=None,
+                timer_value=None,
                 dynamic_range=False
             )
             logger.info(f"Finished processing {len(processed_weeks)} weeks")
-        except Exception as e:
-            logger.error(f"Error during --forward extraction: {e}")
-            return
 
-    elif args.weekforward > 0 or args.weekbackward > 0:
-        logger.info(f"Processing specified range: {args.weekbackward} weeks backward, {args.weekforward} weeks forward, always including current week (0)")
-        directions = set()
-        directions.add(0)
-        for i in range(1, args.weekforward + 1):
-            directions.add(i)
-        for i in range(1, args.weekbackward + 1):
-            directions.add(-i)
-        directions = sorted(directions)
-        logger.info(f"Week offsets to process: {directions}")
-        processed_weeks = await process_weeks(
-            directions=directions,
-            teacher_map=teacher_map,
-            student_id=student_id,
-            output_dir=args.output_dir,
-            api_cookies=api_cookies,
-            lname_value=lname_value,
-            timer_value=timer_value,
-            dynamic_range=False
-        )
-        logger.info(f"Finished processing {len(processed_weeks)} weeks")
-
-    else:
-        logger.info("No week range specified, processing current week only")
-        directions = [0]
-        processed_weeks = await process_weeks(
-            directions=directions,
-            teacher_map=teacher_map,
-            student_id=student_id,
-            output_dir=args.output_dir,
-            api_cookies=api_cookies,
-            lname_value=lname_value,
-            timer_value=timer_value,
-            dynamic_range=False
-        )
-        logger.info(f"Finished processing {len(processed_weeks)} weeks")
+        else:
+            logger.info("No week range specified, processing current week only")
+            directions = [0]
+            processed_weeks = await process_weeks(
+                directions=directions,
+                teacher_map=teacher_map,
+                student_id=student_id,
+                output_dir=args.output_dir,
+                api_cookies=api_cookies,
+                lname_value=None,
+                timer_value=None,
+                dynamic_range=False
+            )
+            logger.info(f"Finished processing {len(processed_weeks)} weeks")
 
     # Print summary of errors
     error_summary = get_error_summary()
@@ -436,7 +596,7 @@ async def main():
 
     # Check and report cookie expiration at the end
     if args.use_cookies:
-        if hasattr(auth_service, "cookie_data") and auth_service.cookie_data:
+        if auth_service and hasattr(auth_service, "cookie_data") and auth_service.cookie_data:
             end_expiration_msg = estimate_cookie_expiration(auth_service.cookie_data)
             logger.info(f"Final cookie status: {end_expiration_msg}")
         else:

@@ -782,7 +782,8 @@ async def fetch_weeks_data(
     student_id: str,
     lname_value: str = None,
     timer_value: int = None,
-    v_override: str = None
+    v_override: str = None,
+    page=None
 ) -> Dict[str, Any]:
     """
     Fetch all available weeks data directly using the udvalg.asp endpoint without navigating the page.
@@ -793,6 +794,7 @@ async def fetch_weeks_data(
         lname_value: Optional dynamically extracted lname value
         timer_value: Optional timer value extracted from the page
         v_override: Override for the 'v' parameter to access different academic years
+        page: Optional Playwright page object, used for student info extraction
         
     Returns:
         Dictionary containing weeks data with week numbers, offsets, and dates
@@ -845,6 +847,33 @@ async def fetch_weeks_data(
                 request_headers=headers,
                 request_payload=params
             )
+        
+        # Extract and save student info dynamically
+        try:
+            # Parse name and class from response HTML
+            import re as _re, os as _os, json as _json
+            match = _re.search(r"N[æ&aelig;]mingatímatalva:\s*([^,]+),\s*([^\s<]+)", response.text, _re.IGNORECASE)
+            if match:
+                extracted_name = match.group(1).strip()
+                extracted_class = match.group(2).strip()
+                from glasir_timetable.student_utils import student_id_path
+                # Load existing info if any
+                info = {}
+                if _os.path.exists(student_id_path):
+                    try:
+                        with open(student_id_path, 'r') as f:
+                            info = _json.load(f)
+                    except Exception:
+                        info = {}
+                # Always merge ID, name, class
+                info['id'] = params.get('id') or info.get('id')
+                info['name'] = extracted_name
+                info['class'] = extracted_class
+                with open(student_id_path, 'w') as f:
+                    _json.dump(info, f, indent=4)
+                logger.info(f"[DEBUG] Saved student info from weeks API: {info}")
+        except Exception as e:
+            logger.warning(f"[DEBUG] Could not extract/save student info from weeks response: {e}")
             
         # Parse the HTML to extract weeks data
         return parse_weeks_html_response(response.text)
