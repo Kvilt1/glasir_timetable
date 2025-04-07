@@ -4,6 +4,8 @@ Utilities for handling student information such as student ID, name, and class.
 Supports per-account persistent storage of student info.
 """
 import os
+from typing import Optional
+from glasir_timetable.accounts.profile import AccountProfile
 import json
 import re
 import logging
@@ -107,11 +109,14 @@ def get_account_student_info_path(username: str) -> str:
     return os.path.join(base_dir, "student_info.json")
 
 
-def load_student_info(username: str) -> Optional[dict]:
+def load_student_info(username: str, profile: Optional[AccountProfile] = None) -> Optional[dict]:
     """
     Load student info (id, name, class) for the given account.
+    If profile is provided, uses profile.load_student_info().
     Returns None if not found or invalid.
     """
+    if profile:
+        return profile.load_student_info()
     path = get_account_student_info_path(username)
     if not os.path.exists(path):
         return None
@@ -125,10 +130,14 @@ def load_student_info(username: str) -> Optional[dict]:
     return None
 
 
-def save_student_info(username: str, info: dict) -> None:
+def save_student_info(username: str, info: dict, profile: Optional[AccountProfile] = None) -> None:
     """
     Save student info (id, name, class) for the given account.
+    If profile is provided, uses profile.save_student_info().
     """
+    if profile:
+        profile.save_student_info(info)
+        return
     path = get_account_student_info_path(username)
     try:
         with open(path, "w") as f:

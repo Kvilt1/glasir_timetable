@@ -2,6 +2,13 @@ import os
 import json
 import shutil
 
+# New imports for refactored account management
+from glasir_timetable.accounts.manager import AccountManager as _NewAccountManager
+from glasir_timetable.accounts.profile import AccountProfile
+
+# Singleton instance of the new AccountManager
+_manager = _NewAccountManager(os.path.join(os.path.dirname(__file__), "accounts"))
+
 ACCOUNTS_DIR = os.path.join(os.path.dirname(__file__), "accounts")
 
 
@@ -10,68 +17,74 @@ def ensure_accounts_dir():
 
 
 def list_accounts():
-    ensure_accounts_dir()
-    return [
-        name for name in os.listdir(ACCOUNTS_DIR)
-        if os.path.isdir(os.path.join(ACCOUNTS_DIR, name)) and name != "global"
-    ]
+    """
+    Deprecated: Use AccountManager.list_profiles() instead.
+    """
+    return _manager.list_profiles()
 
 
 def account_exists(username):
-    return os.path.isdir(os.path.join(ACCOUNTS_DIR, username))
+    """
+    Deprecated: Use AccountManager.profile_exists() instead.
+    """
+    return _manager.profile_exists(username)
 
 
 def create_account(username, credentials):
-    account_path = os.path.join(ACCOUNTS_DIR, username)
-    os.makedirs(account_path, exist_ok=True)
-    save_account_data(username, "credentials", credentials)
-    # Empty cookies and student-id initially
-    save_account_data(username, "cookies", {})
-    save_account_data(username, "student_id", {})
+    """
+    Deprecated: Use AccountManager.create_profile() instead.
+    """
+    _manager.create_profile(username, credentials)
 
 
 def delete_account(username):
-    account_path = os.path.join(ACCOUNTS_DIR, username)
-    if os.path.isdir(account_path):
-        shutil.rmtree(account_path)
+    """
+    Deprecated: Use AccountManager.delete_profile() instead.
+    """
+    _manager.delete_profile(username)
 
 
 def rename_account(old_username, new_username):
-    old_path = os.path.join(ACCOUNTS_DIR, old_username)
-    new_path = os.path.join(ACCOUNTS_DIR, new_username)
-    if os.path.isdir(old_path):
-        os.rename(old_path, new_path)
+    """
+    Deprecated: Use AccountManager.rename_profile() instead.
+    """
+    _manager.rename_profile(old_username, new_username)
 
 
 def get_account_path(username):
-    return os.path.join(ACCOUNTS_DIR, username)
+    """
+    Deprecated: Use AccountProfile.base_dir instead.
+    """
+    profile = _manager.load_profile(username)
+    return str(profile.base_dir)
 
 
 def load_account_data(username, data_type):
     """
-    data_type: 'credentials', 'cookies', 'student_id'
+    Deprecated: Use AccountProfile.load_* methods instead.
     """
-    filename = {
-        "credentials": "credentials.json",
-        "cookies": "cookies.json",
-        "student_id": "student-id.json"
-    }[data_type]
-    path = os.path.join(ACCOUNTS_DIR, username, filename)
-    if not os.path.exists(path):
+    profile = _manager.load_profile(username)
+    if data_type == "credentials":
+        return profile.load_credentials()
+    elif data_type == "cookies":
+        return profile.load_cookies()
+    elif data_type == "student_id":
+        return profile.load_student_info()
+    else:
         return None
-    with open(path, "r") as f:
-        return json.load(f)
 
 
 def save_account_data(username, data_type, data):
-    filename = {
-        "credentials": "credentials.json",
-        "cookies": "cookies.json",
-        "student_id": "student-id.json"
-    }[data_type]
-    path = os.path.join(ACCOUNTS_DIR, username, filename)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    """
+    Deprecated: Use AccountProfile.save_* methods instead.
+    """
+    profile = _manager.load_profile(username)
+    if data_type == "credentials":
+        profile.save_credentials(data)
+    elif data_type == "cookies":
+        profile.save_cookies(data)
+    elif data_type == "student_id":
+        profile.save_student_info(data)
 
 
 def interactive_account_selection():
