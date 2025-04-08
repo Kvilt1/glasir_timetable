@@ -8,9 +8,6 @@ import logging
 import time
 from typing import Tuple, Optional
 
-from ..constants import (
-    DEFAULT_TIMER_FALLBACK,
-)
 
 logger = logging.getLogger(__name__)
 

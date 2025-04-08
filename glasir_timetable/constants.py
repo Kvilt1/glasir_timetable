@@ -76,8 +76,6 @@ DEFAULT_HEADERS = {
 }
 
 # Default fallback values
-DEFAULT_LNAME_FALLBACK = "29"  # Fallback for lname if extraction fails
-DEFAULT_TIMER_FALLBACK = "0"   # Fallback for timer if extraction fails
 
 # File paths
 TEACHER_CACHE_FILE = "glasir_timetable/accounts/global/teacher_cache.json"

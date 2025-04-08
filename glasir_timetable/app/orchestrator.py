@@ -12,10 +12,11 @@ import logging
 from glasir_timetable import (
     logger, stats, update_stats, get_error_summary, configure_raw_responses
 )
-from glasir_timetable.service_factory import create_services, set_config
-from glasir_timetable.cookie_auth import load_cookies, estimate_cookie_expiration
+from glasir_timetable.service_factory import create_services, set_config, CookieAuthenticationService
+from glasir_timetable.cookie_auth import load_cookies, estimate_cookie_expiration, is_cookies_valid, check_and_refresh_cookies
 from glasir_timetable.navigation import process_weeks, extract_min_max_week_offsets
 from glasir_timetable.utils.param_utils import parse_dynamic_params
+from glasir_timetable.student_utils import get_student_id
 
 from playwright.async_api import async_playwright
 from glasir_timetable.utils.error_utils import (
@@ -46,19 +47,31 @@ async def run_extraction(app):
                 app.set_services(services)
 
                 auth_service = services["auth"]
-                navigation_service = services["navigation"]
                 extraction_service = services["extraction"]
                 api_client = services.get("api_client")
 
                 # Authenticate
-                login_success = await auth_service.login(
-                    credentials["username"],
-                    credentials["password"],
-                    page
-                )
-                if not login_success:
-                    logger.error("Authentication failed. Please check your credentials.")
-                    return
+                if isinstance(auth_service, CookieAuthenticationService):
+                    try:
+                        # Attempt to load and refresh cookies if needed
+                        cookie_data = await check_and_refresh_cookies(
+                            page,
+                            credentials["username"],
+                            credentials["password"],
+                            args.cookie_path
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to refresh cookies via Playwright: {e}")
+                        return
+                else:
+                    login_success = await auth_service.login(
+                        credentials["username"],
+                        credentials["password"],
+                        page
+                    )
+                    if not login_success:
+                        logger.error("Authentication failed. Please check your credentials.")
+                        return
 
                 # Get API cookies
                 api_cookies = {}
@@ -72,7 +85,7 @@ async def run_extraction(app):
                 app.set_api_cookies(api_cookies)
 
                 # Extract student info and params
-                student_id = await navigation_service.get_student_id(page)
+                student_id = await get_student_id(page)
                 content = await page.content()
                 lname_value, timer_value = parse_dynamic_params(content)
 

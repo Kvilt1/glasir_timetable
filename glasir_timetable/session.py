@@ -9,10 +9,7 @@ import warnings
 
 from .utils.error_utils import handle_errors, GlasirScrapingError
 from .utils.param_utils import parse_dynamic_params
-from .constants import (
-    DEFAULT_TIMER_FALLBACK,
-    GLASIR_TIMETABLE_URL,
-)
+from .constants import GLASIR_TIMETABLE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -77,25 +74,29 @@ class AuthSessionManager:
         self._timer: Optional[str] = None
         self._cached_params: Dict[str, str] = {}
 
-    @property
-    async def lname(self) -> str:
-        """Get the 'lname' parameter, fetching if necessary."""
-        if self._lname is None:
-            await self.fetch_and_cache_params()
-        if self._lname is None: # Still None after fetch attempt
-             logger.warning("Could not extract lname, no fallback available")
-             return None
-        return self._lname
+class SessionParameterError(Exception):
+    """Raised when required session parameters cannot be extracted."""
+    pass
 
-    @property
-    async def timer(self) -> str:
-        """Get the 'timer' parameter, fetching if necessary."""
-        if self._timer is None:
-            await self.fetch_and_cache_params()
-        if self._timer is None: # Still None after fetch attempt
-            logger.warning(f"Could not extract timer, falling back to {DEFAULT_TIMER_FALLBACK}")
-            return DEFAULT_TIMER_FALLBACK
-        return self._timer
+@property
+async def lname(self) -> str:
+    """Get the 'lname' parameter, fetching if necessary."""
+    if self._lname is None:
+        await self.fetch_and_cache_params()
+    if self._lname is None:
+        logger.error("Failed to extract 'lname' parameter")
+        raise SessionParameterError("Missing required session parameter 'lname'")
+    return self._lname
+
+@property
+async def timer(self) -> str:
+    """Get the 'timer' parameter, fetching if necessary."""
+    if self._timer is None:
+        await self.fetch_and_cache_params()
+    if self._timer is None:
+        logger.error("Failed to extract 'timer' parameter")
+        raise SessionParameterError("Missing required session parameter 'timer'")
+    return self._timer
 
     async def get_params(self) -> Dict[str, str]:
         """Get both 'lname' and 'timer' parameters."""
