@@ -156,20 +156,44 @@ async def main():
     from glasir_timetable.interface.cli import parse_args
     args = parse_args()
     
-    # If no log file provided, generate timestamped log file inside glasir_timetable/logs/
+    # If no log file provided, use default output/logs/glasir_timetable.log
     if not args.log_file:
-        log_dir = os.path.join("glasir_timetable", "logs")
+        log_dir = os.path.join("output", "logs")
         os.makedirs(log_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        args.log_file = os.path.join(log_dir, f"glasir_timetable_{timestamp}.log")
+        args.log_file = os.path.join(log_dir, "glasir_timetable.log")
+    # Ensure directory for log file exists (handles custom paths)
+    log_dir = os.path.dirname(args.log_file)
+    if log_dir and not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+
+    # Generate date string for log filename
+    date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    # Create dated log filename
+    base_log_file = args.log_file
+    if base_log_file.endswith('.log'):
+        dated_log_file = base_log_file[:-4] + f"_{date_str}.log"
+    else:
+        dated_log_file = base_log_file + f"_{date_str}.log"
+
+    # Create latest log filename in same directory
+    latest_log_file = os.path.join(log_dir, "latest.log")
+
 
     # Configure logging based on command-line arguments
     log_level = getattr(logging, args.log_level)
     if args.log_file:
-        # Add file handler if log file is specified
-        file_handler = logging.FileHandler(args.log_file)
-        file_handler.setFormatter(logging.Formatter('[%(asctime)s] %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
-        logger.addHandler(file_handler)
+        formatter = logging.Formatter('[%(asctime)s] %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+
+        # Handler for dated log file (append mode)
+        dated_handler = logging.FileHandler(dated_log_file, mode='a')
+        dated_handler.setFormatter(formatter)
+        logger.addHandler(dated_handler)
+
+        # Handler for latest.log (overwrite mode)
+        latest_handler = logging.FileHandler(latest_log_file, mode='w')
+        latest_handler.setFormatter(formatter)
+        logger.addHandler(latest_handler)
 
     # Set the log level
     logger.setLevel(log_level)

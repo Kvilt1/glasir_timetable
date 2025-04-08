@@ -22,7 +22,7 @@ def parse_args():
     parser.add_argument('--headless', action='store_false', dest='headless', default=True, help='Run in non-headless mode (default: headless=True)')
     parser.add_argument('--log-level', type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         default='INFO', help='Set the logging level')
-    parser.add_argument('--log-file', type=str, help='Log to a file instead of console')
+    parser.add_argument('--log-file', type=str, default='output/logs/glasir_timetable.log', help='Log to a file instead of console (default: output/logs/glasir_timetable.log)')
     parser.add_argument('--collect-error-details', action='store_true', help='Collect detailed error information')
     parser.add_argument('--collect-tracebacks', action='store_true', help='Collect tracebacks for errors')
     parser.add_argument('--enable-screenshots', action='store_true', help='Enable screenshots on errors')
@@ -34,7 +34,7 @@ def parse_args():
     parser.add_argument('--teacherupdate', action='store_true', help='Update the teacher mapping cache at the start of the script')
     parser.add_argument('--skip-timetable', action='store_true', help='Skip timetable extraction, useful when only updating teachers')
     parser.add_argument('--save-raw-responses', action='store_true', help='Save raw API responses before parsing')
-    parser.add_argument('--raw-responses-dir', type=str, help='Directory to save raw API responses (default: glasir_timetable/raw_responses/)')
+    parser.add_argument('--raw-responses-dir', type=str, default='output/raw_responses/', help='Directory to save raw API responses (default: output/raw_responses/)')
     args = parser.parse_args()
     return args
 

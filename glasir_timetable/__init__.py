@@ -149,15 +149,15 @@ def configure_raw_responses(save: bool, directory: str = None, save_request_deta
     global raw_response_config
     raw_response_config["save_enabled"] = save
     raw_response_config["save_request_details"] = save_request_details
-    if directory is not None:
-        raw_response_config["directory"] = directory
-    
+    if directory is None:
+        directory = os.path.join("output", "raw_responses")
+    raw_response_config["directory"] = directory
+
     # Create the directory if it doesn't exist and saving is enabled
-    if save and directory is not None:
+    if save:
         import os
         os.makedirs(directory, exist_ok=True)
         logger.info(f"Raw responses will be saved to: {directory}")
-    elif save:
         import os
         os.makedirs(raw_response_config["directory"], exist_ok=True)
         logger.info(f"Raw responses will be saved to: {raw_response_config['directory']}")

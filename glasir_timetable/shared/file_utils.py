@@ -75,9 +75,10 @@ def save_raw_response(
         bool: True if save was successful, False otherwise
     """
     try:
+        file_path = None
         # Import global config and counter
         from glasir_timetable import raw_response_config
-        from glasir_timetable.shared import raw_response_counter
+        from glasir_timetable import raw_response_counter
 
         # Prefix filename with call order number
         prefix = f"{raw_response_counter}_"
