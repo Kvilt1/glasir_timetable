@@ -1070,8 +1070,7 @@ class ApiClient:
         backoff.expo,
         (httpx.RequestError, httpx.HTTPStatusError, httpx.ConnectError, GlasirScrapingError),
         max_tries=3,
-        logger=logger,
-        on_backoff=lambda details: self._on_backoff_handler(details)
+        logger=logger
     )
     async def _async_make_request(self, url: str, payload: dict) -> httpx.Response:
         params = await self._session_manager.get_params()

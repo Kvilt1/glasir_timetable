@@ -1,6 +1,3 @@
-# Dummy PlaywrightExtractionService to fix undefined error
-class PlaywrightExtractionService:
-    pass
 
 
 #!/usr/bin/env python3
@@ -602,22 +599,6 @@ class ApiExtractionService(ExtractionService):
         self._api_client = api_client
         self._teacher_cache = {}  # Local cache for teacher mapping
 
-    async def extract_timetable(self, page: Page, teacher_map: Dict[str, str] = None) -> Union[TimetableData, Dict[str, Any]]:
-        """
-        Extract timetable data from the current page.
-        Note: This still requires a page because some timetable data is not yet extracted via API.
-        
-        Args:
-            page: The Playwright page object
-            teacher_map: Optional dictionary mapping teacher initials to full names
-            
-        Returns:
-            Union[TimetableData, dict]: Extracted timetable data as model or dictionary
-        """
-        # For now, delegate to the Playwright-based implementation
-        # We'll incrementally replace this with API-based implementations
-        playwright_extractor = PlaywrightExtractionService()
-        return await playwright_extractor.extract_timetable(page, teacher_map)
 
     async def extract_teacher_map(self, page: Page, force_update: bool = False,
                              cookies: Dict[str, str] = None, lname_value: str = None, timer_value: int = None) -> Dict[str, str]:
@@ -714,8 +695,8 @@ class ApiExtractionService(ExtractionService):
             student_id = await self.get_student_id(page)
             if not student_id:
                 logger.warning(f"Could not extract student ID for homework extraction, lesson {lesson_id}")
-                # Fall back to Playwright extraction
-                return await self._fallback_extract_homework(page, lesson_id, subject_code)
+                # No fallback available
+                return None
             
             # Use the API client to fetch homework data
             homework_data = await self._api_client.fetch_homework_details(lesson_id, student_id)
@@ -742,24 +723,9 @@ class ApiExtractionService(ExtractionService):
                 
         except Exception as e:
             logger.error(f"Error using API client for homework extraction (lesson {lesson_id}): {e}")
-            logger.info("Falling back to Playwright extraction")
-            return await self._fallback_extract_homework(page, lesson_id, subject_code)
+            logger.info("No fallback available for homework extraction")
+            return None
 
-    async def _fallback_extract_homework(self, page: Page, lesson_id: str, subject_code: str = "Unknown") -> Optional[Homework]:
-        """
-        Fallback method using Playwright for homework extraction.
-        
-        Args:
-            page: The Playwright page object
-            lesson_id: The ID of the lesson
-            subject_code: The subject code for better error reporting
-            
-        Returns:
-            Optional[Homework]: Homework data if successful, None otherwise
-        """
-        # We'll reuse the PlaywrightExtractionService implementation
-        playwright_extractor = PlaywrightExtractionService()
-        return await playwright_extractor.extract_homework(page, lesson_id, subject_code)
 
     async def extract_multiple_homework(self, 
                                       page: Page, 
@@ -843,21 +809,6 @@ class ApiExtractionService(ExtractionService):
             logger.info("Falling back to Playwright extraction")
             return await self._fallback_extract_multiple_homework(page, lesson_ids, batch_size)
 
-    async def _fallback_extract_multiple_homework(self, page: Page, lesson_ids: List[str], batch_size: int = 3) -> Dict[str, Optional[Homework]]:
-        """
-        Fallback method using Playwright for batch homework extraction.
-        
-        Args:
-            page: The Playwright page object
-            lesson_ids: List of lesson IDs
-            batch_size: Number of homework items to process in parallel
-            
-        Returns:
-            Dict[str, Optional[Homework]]: Dictionary mapping lesson IDs to homework data
-        """
-        # We'll reuse the PlaywrightExtractionService implementation
-        playwright_extractor = PlaywrightExtractionService()
-        return await playwright_extractor.extract_multiple_homework(page, lesson_ids, batch_size)
 
     async def extract_student_info(self, page: Page) -> Dict[str, str]:
         """
