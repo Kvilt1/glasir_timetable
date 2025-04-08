@@ -9,14 +9,16 @@ Configuration management for Glasir Timetable.
 import os
 import logging
 from datetime import datetime
-from glasir_timetable import constants, configure_raw_responses
-from glasir_timetable.cookie_auth import load_cookies, estimate_cookie_expiration
+from glasir_timetable.shared import constants
+from glasir_timetable import configure_raw_responses
+from glasir_timetable.core.cookie_auth import load_cookies, estimate_cookie_expiration
 from glasir_timetable import logger
-from glasir_timetable.account_manager import load_account_data, save_account_data
-from glasir_timetable.app.cli import prompt_for_credentials
-from glasir_timetable.utils.auth_utils import is_full_auth_data_valid
+from glasir_timetable.accounts.manager import AccountManager
+from glasir_timetable.interface.cli import prompt_for_credentials
+from glasir_timetable.shared.auth_utils import is_full_auth_data_valid
 
 def load_config(args, selected_username):
+    account_manager = AccountManager()
     """
     Prepare and validate configuration based on CLI args and username.
     Returns a config dict with derived paths and flags.
@@ -33,13 +35,13 @@ def load_config(args, selected_username):
 
     # Override constants and module defaults
     constants.STUDENT_ID_FILE = student_id_path
-    import glasir_timetable.student_utils as student_utils
+    import glasir_timetable.core.student_utils as student_utils
     student_utils.set_student_id_path_for_user(selected_username)
-    import glasir_timetable.cookie_auth as cookie_auth_module
+    import glasir_timetable.core.cookie_auth as cookie_auth_module
     cookie_auth_module.DEFAULT_COOKIE_PATH = cookie_path
 
     # Update service factory config
-    from glasir_timetable.service_factory import set_config as set_service_config
+    from glasir_timetable.core.service_factory import set_config as set_service_config
     set_service_config("cookie_file", cookie_path)
     set_service_config("storage_dir", output_dir)
 
@@ -72,10 +74,11 @@ def load_config(args, selected_username):
         logger.info("Auth data missing or expired, Playwright login required.")
 
     # Load credentials or prompt if missing
-    credentials = load_account_data(selected_username, "credentials")
+    profile = account_manager.load_profile(selected_username)
+    credentials = profile.load_credentials()
     if not credentials or "username" not in credentials or "password" not in credentials:
         credentials = prompt_for_credentials(selected_username)
-        save_account_data(selected_username, "credentials", credentials)
+        profile.save_credentials(credentials)
 
     # Prepare config dict
     config = {

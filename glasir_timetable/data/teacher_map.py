@@ -14,8 +14,8 @@ from typing import Dict, Optional
 from bs4 import BeautifulSoup, Tag
 
 # Import fetch_teacher_mapping from api_client
-from ..utils.error_utils import handle_errors, GlasirScrapingError
-from ..constants import TEACHER_CACHE_FILE
+from glasir_timetable.shared.error_utils import handle_errors, GlasirScrapingError
+from glasir_timetable.shared.constants import TEACHER_CACHE_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ async def extract_teacher_map(page, use_cache=False, cache_path=None, cookies=No
         dict: A mapping of teacher initials to full names.
     """
     # Import here to avoid circular import
-    from glasir_timetable.api_client import fetch_teacher_mapping, parse_teacher_map_html_response
+    from glasir_timetable.core.api_client import fetch_teacher_mapping, parse_teacher_map_html_response
 
     # Set default cache path if not provided
     if cache_path is None:

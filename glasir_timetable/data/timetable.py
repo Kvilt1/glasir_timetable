@@ -14,13 +14,13 @@ from datetime import datetime, timedelta
 from bs4 import BeautifulSoup, NavigableString
 from tqdm.auto import tqdm
 
-from glasir_timetable.constants import (
+from glasir_timetable.shared.constants import (
     BLOCK_TIMES,
     DAY_NAME_MAPPING,
     DAYS_ORDER,
     CANCELLED_CLASS_INDICATORS
 )
-from glasir_timetable.utils.formatting import (
+from glasir_timetable.shared.formatting import (
     normalize_week_number,
     convert_keys_to_camel_case,
     format_iso_date,
@@ -28,15 +28,14 @@ from glasir_timetable.utils.formatting import (
     format_academic_year,
     get_timeslot_info
 )
-from glasir_timetable.utils.date_utils import normalize_dates, parse_date
-from glasir_timetable.utils.model_adapters import dict_to_timetable_data
-from glasir_timetable.utils import logger
-from glasir_timetable import add_error, update_stats
+from glasir_timetable.shared.date_utils import normalize_dates, parse_date
+from glasir_timetable.shared.model_adapters import dict_to_timetable_data
+from glasir_timetable import logger, add_error, update_stats
 # Import get_student_id from student_utils instead of navigation
-from glasir_timetable.student_utils import get_student_id
-from glasir_timetable.constants import STUDENT_ID_FILE # Use the constant for the file path
+from glasir_timetable.core.student_utils import get_student_id
+from glasir_timetable.shared.constants import STUDENT_ID_FILE # Use the constant for the file path
 
-from glasir_timetable.models import TimetableData, StudentInfo, WeekInfo, Event
+from glasir_timetable.core.models import TimetableData, StudentInfo, WeekInfo, Event
 
 async def extract_student_info(page):
     """
@@ -252,7 +251,7 @@ async def parse_timetable_html(html_content: str, teacher_map: Dict[str, str], s
 
     # --- Extract and persist student info dynamically ---
     try:
-        from glasir_timetable.student_utils import student_id_path
+        from glasir_timetable.core.student_utils import student_id_path
         import json as _json
         import re as _re
         import os as _os

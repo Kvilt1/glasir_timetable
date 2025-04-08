@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
-import glasir_timetable.service_factory as sf
+import glasir_timetable.core.service_factory as sf
 
 def test_service_factory_caches_instances():
     mock_service = MagicMock(name="MockCookieAuthService")

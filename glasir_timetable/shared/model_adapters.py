@@ -7,8 +7,9 @@ and Pydantic models for the Glasir Timetable application.
 from typing import Dict, Any, Optional, Union, List, Tuple, Type, TypeVar
 from pydantic import ValidationError
 
-from glasir_timetable import logger, add_error
-from glasir_timetable.models import StudentInfo, WeekInfo, Event, TimetableData
+from glasir_timetable.shared import logger
+from glasir_timetable import add_error
+from glasir_timetable.core.models import StudentInfo, WeekInfo, Event, TimetableData
 
 # Type variable for generic model functions
 T = TypeVar('T')

@@ -6,9 +6,9 @@ import os
 import json
 from typing import Any, Dict, Optional, Union
 
-from glasir_timetable import logger
-from glasir_timetable.models import TimetableData
-from glasir_timetable.utils.model_adapters import timetable_data_to_dict
+from glasir_timetable.shared import logger
+from glasir_timetable.core.models import TimetableData
+from glasir_timetable.shared.model_adapters import timetable_data_to_dict
 
 def save_json_data(
     data: Union[Dict[str, Any], TimetableData],
@@ -76,7 +76,8 @@ def save_raw_response(
     """
     try:
         # Import global config and counter
-        from glasir_timetable import raw_response_config, raw_response_counter
+        from glasir_timetable import raw_response_config
+        from glasir_timetable.shared import raw_response_counter
 
         # Prefix filename with call order number
         prefix = f"{raw_response_counter}_"
@@ -84,12 +85,12 @@ def save_raw_response(
             filename = prefix + filename
 
         # Increment the global counter
-        import glasir_timetable
-        glasir_timetable.raw_response_counter += 1
+        # removed unnecessary import
+        raw_response_counter += 1
         # Ensure the target directory exists
         os.makedirs(directory, exist_ok=True)
         
-        from glasir_timetable import raw_response_config
+        # removed redundant import
         
         save_request_details = raw_response_config.get("save_request_details", False)
         include_request = save_request_details and request_url is not None

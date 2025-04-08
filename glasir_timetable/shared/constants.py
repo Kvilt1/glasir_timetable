@@ -85,4 +85,4 @@ STUDENT_ID_FILE = "glasir_timetable/student-id.json"
 AUTH_COOKIES_FILE = "cookies.json"
 
 # Data directory for storing timetable data
-DATA_DIR = "glasir_timetable/weeks" 
+DATA_DIR = "glasir_timetable/weeks"

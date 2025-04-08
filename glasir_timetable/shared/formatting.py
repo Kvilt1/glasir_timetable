@@ -3,7 +3,7 @@
 Utility functions for formatting and date handling.
 """
 import re
-from glasir_timetable.utils.date_utils import convert_date_format, to_iso_date, normalize_dates, parse_time_range
+from glasir_timetable.shared.date_utils import convert_date_format, to_iso_date, normalize_dates, parse_time_range
 
 def format_date(date_str, year):
     """Format date from DD/MM to YYYY-MM-DD"""

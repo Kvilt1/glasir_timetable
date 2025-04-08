@@ -12,8 +12,8 @@ import logging
 import requests
 from typing import Dict, Optional
 
-from glasir_timetable.constants import TEACHER_MAP_URL, TEACHER_CACHE_FILE
-from glasir_timetable.api_client import extract_teachers_from_html
+from glasir_timetable.shared.constants import TEACHER_MAP_URL, TEACHER_CACHE_FILE
+from glasir_timetable.core.api_client import extract_teachers_from_html
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import patch, MagicMock, call
-from glasir_timetable.api_client import ApiClient
-from glasir_timetable.session import GlasirScrapingError
+from glasir_timetable.core.api_client import ApiClient
+from glasir_timetable.core.session import GlasirScrapingError
 
 import time
 

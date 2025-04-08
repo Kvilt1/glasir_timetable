@@ -16,11 +16,11 @@ import time
 from playwright.async_api import Page
 from glasir_timetable import logger, add_error
 # Import from the new student_utils module
-from glasir_timetable.student_utils import get_student_id
+from glasir_timetable.core.student_utils import get_student_id
 # Import directly from homework_parser to avoid circular import
-from glasir_timetable.extractors.homework_parser import parse_homework_html_response
-from glasir_timetable.extractors.timetable import extract_timetable_data, parse_timetable_html, extract_student_info # Import parse_timetable_html and extract_student_info
-from glasir_timetable.api_client import (
+from glasir_timetable.data.homework_parser import parse_homework_html_response
+from glasir_timetable.data.timetable import extract_timetable_data, parse_timetable_html, extract_student_info # Import parse_timetable_html and extract_student_info
+from glasir_timetable.core.api_client import (
     fetch_homework_for_lessons,
     fetch_timetable_for_week,
     fetch_weeks_data,
@@ -29,18 +29,18 @@ from glasir_timetable.api_client import (
 )
 
 # Import utility functions
-from glasir_timetable.utils import (
+from glasir_timetable.shared import (
     normalize_dates,
     normalize_week_number,
     generate_week_filename,
     save_json_data
 )
-from glasir_timetable.utils.error_utils import error_screenshot_context
-from glasir_timetable.models import TimetableData
-from glasir_timetable.utils.model_adapters import dict_to_timetable_data
-from glasir_timetable.utils.param_utils import parse_dynamic_params
-from glasir_timetable.utils.error_utils import handle_errors, evaluate_js_safely
-from glasir_timetable.constants import (
+from glasir_timetable.shared.error_utils import error_screenshot_context
+from glasir_timetable.core.models import TimetableData
+from glasir_timetable.shared.model_adapters import dict_to_timetable_data
+from glasir_timetable.shared.param_utils import parse_dynamic_params
+from glasir_timetable.shared.error_utils import handle_errors, evaluate_js_safely
+from glasir_timetable.shared.constants import (
     GLASIR_BASE_URL,
     GLASIR_TIMETABLE_URL,
     STUDENT_ID_FILE
@@ -518,7 +518,7 @@ async def navigate_and_extract_api(
             logger.error(f"[DEBUG] Page likely closed before extract_student_info(): {e}")
         
         # Get student information before parsing timetable
-        from glasir_timetable.extractors.timetable import extract_student_info
+        from glasir_timetable.data.timetable import extract_student_info
         try:
             student_info = await extract_student_info(page)
         except Exception as e:
@@ -526,7 +526,7 @@ async def navigate_and_extract_api(
             student_info = {"studentName": "Unknown", "class": "Unknown"}
         
         # Extract timetable data using the new parse_timetable_html function
-        from glasir_timetable.extractors.timetable import parse_timetable_html
+        from glasir_timetable.data.timetable import parse_timetable_html
         timetable_data, week_info, lesson_ids = await parse_timetable_html(
             html_content=week_html,
             teacher_map=teacher_map,

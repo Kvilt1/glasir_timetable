@@ -9,7 +9,7 @@ CLI parsing and interactive prompts for Glasir Timetable.
 import argparse
 import sys
 import getpass
-from glasir_timetable import account_manager
+from glasir_timetable.accounts import manager as account_manager
 
 def parse_args():
     print('DEBUG: sys.argv before parsing:', sys.argv)
@@ -43,7 +43,7 @@ def select_account():
     Interactive account selection using account_manager.
     Returns the selected username.
     """
-    return account_manager.interactive_account_selection()
+    return account_manager.AccountManager().interactive_account_selection()
 
 def prompt_for_credentials(username_hint=None):
     """

@@ -18,8 +18,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Union
 
 from playwright.async_api import Page
-from glasir_timetable import logger
-from glasir_timetable.auth import login_to_glasir
+from glasir_timetable.shared import logger
+from glasir_timetable.core.auth import login_to_glasir
 
 # Default path for cookie storage - now inside the glasir_timetable directory
 DEFAULT_COOKIE_PATH = os.path.join(

@@ -10,7 +10,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, Field, validator
 
-from glasir_timetable.models import Event, StudentInfo, WeekInfo, TimetableData
+from glasir_timetable.core.models import Event, StudentInfo, WeekInfo, TimetableData
 
 class Teacher(BaseModel):
     """Teacher domain entity."""

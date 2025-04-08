@@ -40,10 +40,11 @@ import os
 from typing import Dict, Any, Optional, Union
 import httpx
 
-from glasir_timetable import add_error, logger
-from glasir_timetable.session import AuthSessionManager
-from glasir_timetable.api_client import ApiClient
-from glasir_timetable.constants import (
+from glasir_timetable import add_error
+from glasir_timetable.shared import logger
+from glasir_timetable.core.session import AuthSessionManager
+from glasir_timetable.core.api_client import ApiClient
+from glasir_timetable.shared.constants import (
     AUTH_COOKIES_FILE,
     DATA_DIR
 )

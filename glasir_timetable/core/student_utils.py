@@ -10,7 +10,7 @@ import json
 import re
 import logging
 from typing import Optional
-from glasir_timetable.utils import logger
+from glasir_timetable.shared import logger
 
 # Default student ID path (global)
 student_id_path = "glasir_timetable/student-id.json"

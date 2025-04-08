@@ -3,7 +3,7 @@
 Authentication module for the Glasir Timetable application.
 """
 import logging
-from glasir_timetable import logger
+from glasir_timetable.shared import logger
 
 async def login_to_glasir(page, username, password):
     """

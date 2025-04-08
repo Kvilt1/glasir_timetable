@@ -6,7 +6,7 @@ import logging
 
 logger = logging.getLogger("glasir_timetable")
 
-from glasir_timetable.utils.formatting import (
+from glasir_timetable.shared.formatting import (
     format_academic_year,
     get_timeslot_info,
     normalize_dates,
@@ -18,7 +18,7 @@ from glasir_timetable.utils.formatting import (
     parse_time_range
 )
 # Removed validator import as CORRECT.json is no longer used 
-from glasir_timetable.utils.date_utils import (
+from glasir_timetable.shared.date_utils import (
     detect_date_format,
     parse_date,
     format_date,
@@ -28,12 +28,12 @@ from glasir_timetable.utils.date_utils import (
     to_iso_date
 ) 
 
-from glasir_timetable.utils.file_utils import (
+from glasir_timetable.shared.file_utils import (
     save_json_data
 )
 
 # Import error handling utilities
-from glasir_timetable.utils.error_utils import (
+from glasir_timetable.shared.error_utils import (
     handle_errors,
     error_screenshot_context,
     resource_cleanup_context,

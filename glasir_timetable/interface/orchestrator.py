@@ -9,17 +9,19 @@ Orchestration logic for Glasir Timetable.
 import os
 import time
 import logging
+import httpx
 from glasir_timetable import (
     logger, stats, update_stats, get_error_summary, configure_raw_responses
 )
-from glasir_timetable.service_factory import create_services, set_config, CookieAuthenticationService
-from glasir_timetable.cookie_auth import load_cookies, estimate_cookie_expiration, is_cookies_valid, check_and_refresh_cookies
-from glasir_timetable.navigation import process_weeks, extract_min_max_week_offsets
-from glasir_timetable.utils.param_utils import parse_dynamic_params
-from glasir_timetable.student_utils import get_student_id
+from glasir_timetable.core.service_factory import create_services, set_config, CookieAuthenticationService
+from glasir_timetable.core.cookie_auth import load_cookies, estimate_cookie_expiration, is_cookies_valid, check_and_refresh_cookies
+from glasir_timetable.core.navigation import process_weeks, extract_min_max_week_offsets
+from glasir_timetable.shared.param_utils import parse_dynamic_params
+from glasir_timetable.core.student_utils import get_student_id
+from glasir_timetable.shared.constants import GLASIR_TIMETABLE_URL, DEFAULT_HEADERS
 
 from playwright.async_api import async_playwright
-from glasir_timetable.utils.error_utils import (
+from glasir_timetable.shared.error_utils import (
     error_screenshot_context, register_console_listener
 )
 
@@ -127,9 +129,24 @@ async def run_extraction(app):
         except Exception as e:
             logger.error(f"Failed to fetch teacher map via API: {e}")
             teacher_map = {}
-
+        
+        # --- New logic to fetch dynamic params in API-only mode ---
+        extracted_lname = None
+        extracted_timer = None
+        try:
+            async with httpx.AsyncClient(cookies=api_cookies, headers=DEFAULT_HEADERS, follow_redirects=True) as client:
+                response = await client.get(GLASIR_TIMETABLE_URL)
+                response.raise_for_status()
+                html_content = response.text
+                logger.debug(f"API-only mode: Fetched HTML snippet: {html_content[:1000]}...")
+                extracted_lname, extracted_timer = parse_dynamic_params(html_content)
+                logger.info(f"API-only mode: Extracted lname={extracted_lname}, timer={extracted_timer}")
+        except Exception as e:
+            logger.warning(f"API-only mode: Failed to fetch/parse initial page for dynamic params: {e.__class__.__name__}: {e}")
+        # --- End new logic ---
+        
         await _extract_weeks(
-            args, api_cookies, student_id, None, None, teacher_map
+            args, api_cookies, student_id, extracted_lname, extracted_timer, teacher_map
         )
 
 async def _extract_weeks(args, api_cookies, student_id, lname_value, timer_value, teacher_map):

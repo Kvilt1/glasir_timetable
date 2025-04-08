@@ -20,15 +20,15 @@ import asyncio
 from playwright.async_api import Page
 
 from glasir_timetable import logger, add_error
-from glasir_timetable.models import TimetableData, Event, WeekInfo
-from glasir_timetable.domain import Teacher, Homework, Lesson, Timetable
-from glasir_timetable.cookie_auth import (
+from glasir_timetable.core.models import TimetableData, Event, WeekInfo
+from glasir_timetable.core.domain import Teacher, Homework, Lesson, Timetable
+from glasir_timetable.core.cookie_auth import (
     check_and_refresh_cookies,
     set_cookies_in_playwright_context,
     create_requests_session_with_cookies,
     test_cookies_with_requests
 )
-from glasir_timetable.utils.param_utils import parse_dynamic_params
+from glasir_timetable.shared.param_utils import parse_dynamic_params
 
 class AuthenticationService(abc.ABC):
     """
@@ -364,7 +364,7 @@ class DefaultFormattingService(FormattingService):
             tuple: Normalized (start_date, end_date)
         """
         try:
-            from glasir_timetable.utils import normalize_dates
+            from glasir_timetable.shared import normalize_dates
             
             # Use the utility function
             normalized_start, normalized_end = normalize_dates(start_date, end_date, year)
@@ -384,7 +384,7 @@ class DefaultFormattingService(FormattingService):
             int: Normalized week number
         """
         try:
-            from glasir_timetable.utils import normalize_week_number
+            from glasir_timetable.shared import normalize_week_number
             
             # Use the utility function
             return normalize_week_number(week_num)
@@ -411,7 +411,7 @@ class DefaultFormattingService(FormattingService):
             str: Standardized filename
         """
         try:
-            from glasir_timetable.utils import generate_week_filename
+            from glasir_timetable.shared import generate_week_filename
             
             # Generate filename
             filename = generate_week_filename(year, week_num, start_date, end_date)
@@ -449,7 +449,7 @@ class FileStorageService(StorageService):
             bool: True if successful, False otherwise
         """
         try:
-            from glasir_timetable.utils.file_utils import save_json_data
+            from glasir_timetable.shared.file_utils import save_json_data
             
             # Save data to file
             result = save_json_data(data, output_path)
@@ -469,7 +469,7 @@ class FileStorageService(StorageService):
             Optional[TimetableData]: Loaded timetable data if successful, None otherwise
         """
         try:
-            from glasir_timetable.utils.model_adapters import dict_to_timetable_data
+            from glasir_timetable.shared.model_adapters import dict_to_timetable_data
             
             # Check if file exists
             if not os.path.exists(file_path):
@@ -658,10 +658,10 @@ class ApiExtractionService(ExtractionService):
             dict: Mapping of teacher initials to full names
         """
         # Use the teacher_map extractor directly
-        from glasir_timetable.extractors.teacher_map import extract_teacher_map
+        from glasir_timetable.data.teacher_map import extract_teacher_map
         
         # Use appropriate cache file path
-        from glasir_timetable.constants import TEACHER_CACHE_FILE
+        from glasir_timetable.shared.constants import TEACHER_CACHE_FILE
         
         teacher_map = await extract_teacher_map(
             page, 
@@ -836,7 +836,7 @@ class ApiExtractionService(ExtractionService):
         
         try:
             # Try to extract using DOM selectors
-            from glasir_timetable.utils.error_utils import evaluate_js_safely
+            from glasir_timetable.shared.error_utils import evaluate_js_safely
             
             # Extract student info using JavaScript selectors
             try:
@@ -954,7 +954,7 @@ class ApiExtractionService(ExtractionService):
             Optional[str]: The student ID or None if not found
         """
         # Import here to avoid circular imports
-        from glasir_timetable.student_utils import get_student_id
+        from glasir_timetable.core.student_utils import get_student_id
         
         # Reuse the existing implementation
         return await get_student_id(page) 

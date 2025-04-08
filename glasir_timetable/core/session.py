@@ -7,9 +7,9 @@ from bs4 import BeautifulSoup
 import time
 import warnings
 
-from .utils.error_utils import handle_errors, GlasirScrapingError
-from .utils.param_utils import parse_dynamic_params
-from .constants import GLASIR_TIMETABLE_URL
+from glasir_timetable.shared.error_utils import handle_errors, GlasirScrapingError
+from glasir_timetable.shared.param_utils import parse_dynamic_params
+from glasir_timetable.shared.constants import GLASIR_TIMETABLE_URL
 
 logger = logging.getLogger(__name__)
 

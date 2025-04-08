@@ -7,8 +7,8 @@ This module provides helper functions for checking authentication data validity.
 
 import os
 import json
-from glasir_timetable.cookie_auth import load_cookies, is_cookies_valid
-from glasir_timetable.student_utils import load_student_info
+from glasir_timetable.core.cookie_auth import load_cookies, is_cookies_valid
+from glasir_timetable.core.student_utils import load_student_info
 from glasir_timetable import logger
 
 def is_auth_data_valid_simple(username: str, cookie_path: str) -> bool:

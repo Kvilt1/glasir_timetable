@@ -93,3 +93,30 @@ class AccountManager:
         for username in self.list_profiles():
             profiles[username] = self.load_profile(username)
         return profiles
+
+    def interactive_account_selection(self) -> str:
+        """
+        Interactively prompt the user to select an account profile.
+
+        Returns:
+            str: The selected username.
+        """
+        profiles = self.list_profiles()
+        if not profiles:
+            print("No accounts available.")
+            return None
+
+        print("Available accounts:")
+        for idx, username in enumerate(profiles, 1):
+            print(f"{idx}. {username}")
+
+        while True:
+            choice = input("Select an account by number: ").strip()
+            if not choice.isdigit():
+                print("Invalid input. Please enter a number.")
+                continue
+            index = int(choice)
+            if 1 <= index <= len(profiles):
+                return profiles[index - 1]
+            else:
+                print(f"Please enter a number between 1 and {len(profiles)}.")

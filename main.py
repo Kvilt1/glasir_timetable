@@ -26,8 +26,8 @@ if __name__ == "__main__":
 from tqdm import tqdm
 from playwright.async_api import async_playwright
 from glasir_timetable import logger, setup_logging, stats, update_stats, error_collection, get_error_summary, clear_errors, add_error, configure_raw_responses
-from glasir_timetable.auth import login_to_glasir
-from glasir_timetable.cookie_auth import (
+from glasir_timetable.core.auth import login_to_glasir
+from glasir_timetable.core.cookie_auth import (
     check_and_refresh_cookies,
     set_cookies_in_playwright_context,
     create_requests_session_with_cookies,
@@ -35,13 +35,13 @@ from glasir_timetable.cookie_auth import (
     load_cookies,
     estimate_cookie_expiration
 )
-from glasir_timetable.extractors import (
+from glasir_timetable.data import (
     extract_teacher_map, 
     extract_timetable_data
 )
 
 # Import utility functions
-from glasir_timetable.utils import (
+from glasir_timetable.shared import (
     normalize_dates,
     normalize_week_number,
     generate_week_filename,
@@ -50,7 +50,7 @@ from glasir_timetable.utils import (
 )
 
 # Import error handling utilities
-from glasir_timetable.utils.error_utils import (
+from glasir_timetable.shared.error_utils import (
     error_screenshot_context,
     register_console_listener,
     handle_errors,
@@ -60,28 +60,28 @@ from glasir_timetable.utils.error_utils import (
 )
 
 # Import navigation utilities
-from glasir_timetable.navigation import (
+from glasir_timetable.core.navigation import (
     process_weeks,
     get_week_directions,
     navigate_and_extract_api,
     extract_min_max_week_offsets
 )
 
-from glasir_timetable.models import TimetableData
-from glasir_timetable.utils.model_adapters import timetable_data_to_dict
+from glasir_timetable.core.models import TimetableData
+from glasir_timetable.shared.model_adapters import timetable_data_to_dict
 
 # Import service factory for dependency injection
-from glasir_timetable.service_factory import set_config, create_services
+from glasir_timetable.core.service_factory import set_config, create_services
 
-from glasir_timetable.api_client import (
+from glasir_timetable.core.api_client import (
     fetch_homework_for_lessons
 )
 
-from glasir_timetable.session import AuthSessionManager
-from glasir_timetable.utils.param_utils import parse_dynamic_params
+from glasir_timetable.core.session import AuthSessionManager
+from glasir_timetable.shared.param_utils import parse_dynamic_params
 
-from glasir_timetable.cookie_auth import is_cookies_valid, load_cookies
-from glasir_timetable.student_utils import load_student_info
+from glasir_timetable.core.cookie_auth import is_cookies_valid, load_cookies
+from glasir_timetable.core.student_utils import load_student_info
 
 def is_full_auth_data_valid(username, cookie_path):
     """
@@ -153,7 +153,7 @@ async def main():
     clear_errors()  # Clear any errors from previous runs
     update_stats("start_time", time.time(), increment=False)
 
-    from glasir_timetable.app.cli import parse_args
+    from glasir_timetable.interface.cli import parse_args
     args = parse_args()
     
     # If no log file provided, generate timestamped log file inside glasir_timetable/logs/
@@ -177,11 +177,12 @@ async def main():
         handler.setLevel(log_level)
 
     # ---- ACCOUNT SELECTION ----
-    from glasir_timetable import account_manager, constants
-    from glasir_timetable.app.cli import select_account
+    from glasir_timetable.accounts import manager as account_manager
+    from glasir_timetable.shared import constants
+    from glasir_timetable.interface.cli import select_account
     selected_username = select_account()
 
-    from glasir_timetable.app.config_manager import load_config
+    from glasir_timetable.interface.config_manager import load_config
     config = load_config(args, selected_username)
 
     args = config["args"]
@@ -231,10 +232,10 @@ async def main():
                 
                 # Get specific services
                 auth_service = services["auth"]
-    from glasir_timetable.app.application import Application
+    from glasir_timetable.interface.application import Application
     app = Application(config)
 
-    from glasir_timetable.app.orchestrator import run_extraction
+    from glasir_timetable.interface.orchestrator import run_extraction
     await run_extraction(app)
 
 # Execution completed

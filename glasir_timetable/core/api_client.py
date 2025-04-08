@@ -7,7 +7,7 @@ This module provides utilities for interacting with the Glasir Timetable API.
 
 import time
 from unittest.mock import MagicMock
-from glasir_timetable.session import SessionParameterError
+from glasir_timetable.core.session import SessionParameterError
 import random
 import logging
 import httpx
@@ -23,21 +23,23 @@ import backoff # Using backoff decorator for retries
 
 from playwright.async_api import Page
 
-from glasir_timetable import logger, raw_response_config
-from glasir_timetable.extractors.homework_parser import (
+from glasir_timetable.shared import logger
+from glasir_timetable import raw_response_config
+from glasir_timetable.shared.constants import DEFAULT_HEADERS
+from glasir_timetable.data.homework_parser import (
     clean_homework_text,
     parse_homework_html_response_structured,
     parse_single_homework_html,
 )
-from glasir_timetable.extractors.teacher_map import (
+from glasir_timetable.data.teacher_map import (
     parse_teacher_map_html_response,
     extract_teachers_from_html,
 )
-from glasir_timetable.utils.file_utils import save_raw_response
+from glasir_timetable.shared.file_utils import save_raw_response
 from .session import AuthSessionManager
-from .utils.error_utils import handle_errors, GlasirScrapingError
-from .utils.param_utils import parse_dynamic_params
-from .constants import (
+from glasir_timetable.shared.error_utils import handle_errors, GlasirScrapingError
+from glasir_timetable.shared.param_utils import parse_dynamic_params
+from glasir_timetable.shared.constants import (
     GLASIR_BASE_URL,
     DEFAULT_HEADERS,
     NOTE_ASP_URL,
@@ -45,7 +47,7 @@ from .constants import (
     TIMETABLE_INFO_URL,
     TEACHER_CACHE_FILE,
 )
-from glasir_timetable.student_utils import get_student_id
+from glasir_timetable.core.student_utils import get_student_id
 
 # Use the package-level logger for consistency
 
@@ -579,13 +581,22 @@ async def fetch_weeks_data(
         Dictionary containing weeks data with week numbers, offsets, and dates
     """
     try:
-        base_url = "https://tg.glasir.fo"
-        api_url = f"{base_url}/i/udvalg.asp"
-        
+        base_url = GLASIR_BASE_URL
+        api_url = TIMETABLE_INFO_URL
+
+        # DNS resolution check
+        try:
+            domain = GLASIR_BASE_URL.split("//")[1].split("/")[0]
+            import socket
+            socket.gethostbyname(domain)
+        except socket.gaierror:
+            logger.error(f"DNS resolution failed for {domain}. Please check your network connection or DNS configuration.")
+            return {"weeks": [], "current_week": None}
+
         # Get timer value if not provided
         if timer_value is None:
             timer_value = int(time.time() * 1000)
-            
+
         # Use the parameter format observed in the HAR file
         params = {
             "fname": "Henry",
@@ -597,20 +608,24 @@ async def fetch_weeks_data(
             "id": student_id,
             "v": v_override if v_override is not None else "0"  # Use v_override if provided, otherwise default to 0
         }
-        
+
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            **DEFAULT_HEADERS,
             "Content-Type": "application/x-www-form-urlencoded",
             "Referer": f"{base_url}/132n/"
         }
-        
-        response = await global_async_client.post(api_url, data=params, cookies=cookies, headers=headers)
-        response.raise_for_status()
-            
+
+        try:
+            response = await global_async_client.post(api_url, data=params, cookies=cookies, headers=headers)
+            response.raise_for_status()
+        except httpx.ConnectError as e:
+            logger.error(f"Connection error when connecting to {api_url}: {e}")
+            return {"weeks": [], "current_week": None}
+
         if not response.text:
             logger.warning("Empty response received from weeks data request")
             return {"weeks": [], "current_week": None}
-        
+
         # Save raw response if enabled
         if raw_response_config["save_enabled"]:
             # Construct filename using the agreed pattern
@@ -635,7 +650,7 @@ async def fetch_weeks_data(
             if match:
                 extracted_name = match.group(1).strip()
                 extracted_class = match.group(2).strip()
-                from glasir_timetable.student_utils import student_id_path
+                from glasir_timetable.core.student_utils import student_id_path
                 # Load existing info if any
                 info = {}
                 if _os.path.exists(student_id_path):
@@ -835,13 +850,13 @@ async def fetch_timetable_for_week(
     try:
         # Use the correct URL from constants
         api_url = TIMETABLE_INFO_URL
-        
+
         if timer_value is None:
             timer_value = int(time.time() * 1000)
-            
+
         # Important: Must use MyUpdate-compatible parameters
         logger.info(f"Fetching timetable for week offset {week_offset} with lname={lname_value}")
-        
+
         # Format parameters according to the MyUpdate function we observed
         params = {
             "fname": "Henry",
@@ -853,27 +868,29 @@ async def fetch_timetable_for_week(
             "id": student_id,
             "v": str(week_offset)  # Format v and id as separate parameters as observed in the actual request
         }
-        
+
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            **DEFAULT_HEADERS,
             "Content-Type": "application/x-www-form-urlencoded",
             "Referer": f"{GLASIR_BASE_URL}/132n/"
         }
-        
-        # Use the global async client instead of creating a new one
-        # Add DNS resolution check
+
+        # DNS resolution check
         try:
-            # Attempt to resolve the hostname manually first
             domain = GLASIR_BASE_URL.split("//")[1].split("/")[0]
             import socket
             socket.gethostbyname(domain)
         except socket.gaierror:
             logger.error(f"DNS resolution failed for {domain}. Please check your network connection or DNS configuration.")
             return None
-            
-        response = await global_async_client.post(api_url, data=params, cookies=cookies, headers=headers)
-        response.raise_for_status()
-        
+
+        try:
+            response = await global_async_client.post(api_url, data=params, cookies=cookies, headers=headers)
+            response.raise_for_status()
+        except httpx.ConnectError as e:
+            logger.error(f"Connection error when connecting to {api_url}: {e}")
+            return None
+
         if not response.text:
             logger.warning("Empty response received from timetable request")
             return None
@@ -1147,8 +1164,8 @@ class ApiClient:
                     return teacher_map
 
             if update_cache or not cache_exists:
-                from glasir_timetable.utils.teacher_api import fetch_and_extract_teachers
-                from glasir_timetable.service_factory import _config
+                from glasir_timetable.shared.teacher_api import fetch_and_extract_teachers
+                from glasir_timetable.core.service_factory import _config
                 cookie_path = _config.get("cookie_file", "cookies.json")
                 teacher_map = fetch_and_extract_teachers(cookie_path=cookie_path, update_cache=True)
                 if teacher_map:
