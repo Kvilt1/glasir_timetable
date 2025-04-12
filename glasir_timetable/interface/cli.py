@@ -9,7 +9,8 @@ CLI parsing and interactive prompts for Glasir Timetable.
 import argparse
 import sys
 import getpass
-from glasir_timetable.accounts import manager as account_manager
+from glasir_timetable.storage.profile_manager import ProfileManager
+from typing import Optional
 
 def parse_args():
     print('DEBUG: sys.argv before parsing:', sys.argv)
@@ -38,12 +39,68 @@ def parse_args():
     args = parser.parse_args()
     return args
 
-def select_account():
+from typing import Tuple # Add Tuple import
+
+def select_account() -> Tuple[Optional[str], bool]:
     """
-    Interactive account selection using account_manager.
-    Returns the selected username.
+    Interactively prompts the user to select an account profile.
+
+    Returns:
+        A tuple containing:
+        - The selected username (str) or None if cancelled/failed.
+        - A boolean indicating if a new profile was created (True) or an existing one was selected (False).
     """
-    return account_manager.AccountManager().interactive_account_selection()
+    profile_manager = ProfileManager.get_instance()
+    profiles = profile_manager.list_profiles()
+
+    if not profiles:
+        print("No account profiles found.")
+        create_new = input("Would you like to create a new profile now? (y/n): ").strip().lower()
+        if create_new == 'y':
+            credentials = prompt_for_credentials()
+            username = credentials.get("username")
+            password = credentials.get("password")
+            if username and password:
+                try:
+                    # Pass the full credentials dictionary
+                    profile_manager.create_profile(username, credentials=credentials)
+                    print(f"Profile '{username}' created successfully.")
+                    # Return the newly created username and True flag
+                    return username, True
+                except Exception as e:
+                    print(f"Error creating profile: {e}")
+                    return None, False # Indicate failure, profile not created
+            else:
+                print("Username or password not provided. Cannot create profile.")
+                return None, False # Return None username, profile not created
+        else:
+            print("Profile creation skipped.")
+            return None, False # Indicate failure, profile not created
+
+    print("\nAvailable account profiles:")
+    for idx, username in enumerate(profiles, 1):
+        print(f"  {idx}. {username}")
+
+    while True:
+        try:
+            choice = input(f"Select a profile by number (1-{len(profiles)}) or press Enter to cancel: ").strip()
+            if not choice:
+                print("Selection cancelled.")
+                return None, False # Indicate skipped, profile not created
+            if not choice.isdigit():
+                print("Invalid input. Please enter a number.")
+                continue
+            index = int(choice)
+            if 1 <= index <= len(profiles):
+                selected_username = profiles[index - 1]
+                print(f"Selected profile: {selected_username}")
+                # Return selected username and False flag (existing profile)
+                return selected_username, False
+            else:
+                print(f"Invalid number. Please enter a number between 1 and {len(profiles)}.")
+        except KeyboardInterrupt:
+            print("\nSelection cancelled.")
+            return None, False # Indicate cancelled, profile not created
 
 def prompt_for_credentials(username_hint=None):
     """

@@ -53,7 +53,7 @@ class WeekInfo(BaseModel):
     def generate_week_key(self):
         """Generate week_key if not provided."""
         if not self.week_key:
-            self.week_key = f"{self.year}_Week_{self.week_number}"
+            self.week_key = f"{self.year}-W{self.week_number:02d}"
         return self
     
     class Config:
@@ -65,7 +65,7 @@ class WeekInfo(BaseModel):
                 "startDate": "2025-03-24",
                 "endDate": "2025-03-30",
                 "year": 2025,
-                "weekKey": "2025_Week_13"
+                "weekKey": "2025-W13"
             }
         }
 

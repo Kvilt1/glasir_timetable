@@ -18,6 +18,7 @@ class Application:
         self.cookie_path = config.get("cookie_path")
         self.output_dir = config.get("output_dir")
         self.student_id_path = config.get("student_id_path")
+        self.profile = config.get("profile") # Add profile attribute from config
 
         # Placeholder for runtime state
         self.logger = None

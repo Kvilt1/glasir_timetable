@@ -40,26 +40,11 @@ CANCELLED_CLASS_INDICATORS = [
     'lektionslinje_lessoncancelled'
 ]
 
-# For backwards compatibility - kept for translations in extractors
-DAY_MAP_DA_TO_EN = DAY_NAME_MAPPING
+# DAY_MAP_DA_TO_EN = DAY_NAME_MAPPING # Removed as unused
 
-# Actual time slots used in the timetable (format: start_time, end_time)
-TIME_SLOTS_REAL = [
-    ("08:10", "09:40"),  # Block 1
-    ("10:05", "11:35"),  # Block 2
-    ("12:10", "13:40"),  # Block 3
-    ("13:55", "15:25"),  # Block 4
-    ("15:30", "17:00"),  # Block 5
-    ("17:15", "18:45"),  # Block 6
-]
+# TIME_SLOTS_REAL = [...] # Removed as unused
 
-# Mapping of level codes to descriptive names
-LEVEL_MAP = {
-    "A": "A-level",
-    "B": "B-level", 
-    "C": "C-level",
-    # Add more level mappings as needed
-}
+# LEVEL_MAP = {...} # Removed as unused
 
 # URLs
 GLASIR_BASE_URL = "https://tg.glasir.fo"

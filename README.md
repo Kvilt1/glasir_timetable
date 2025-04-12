@@ -8,155 +8,69 @@ A powerful tool for extracting, processing, and exporting timetable data from Gl
 
 This application authenticates with Glasir's system, fetches timetable and homework data via internal APIs, and exports the data as structured JSON files. It supports parallel extraction, teacher mapping, and flexible week range selection.
 
-The tool uses a **hybrid approach** combining Playwright browser automation with direct API calls via httpx. It prioritizes fast, reliable API-based extraction, but gracefully falls back to Playwright-based scraping if needed. It caches teacher mappings and student info to speed up future runs. All data, cookies, and credentials are stored **per account** under dedicated directories, enabling seamless management of multiple user accounts.
+The tool uses a hybrid approach. It **automatically operates in an API-only mode** using `httpx` when valid authentication data (cookies and student info) is found for the selected profile, significantly speeding up extraction. If valid data is missing or expired, it seamlessly falls back to using Playwright browser automation for login and initial data retrieval. It caches teacher mappings and student info to optimize subsequent runs. All data, cookies, and credentials are stored per account under dedicated directories, enabling seamless management of multiple user accounts.
 
 ---
 
 ## Features
 
-- **Async API-based extraction** using Playwright and httpx
-- **Automatic authentication** with Playwright login and cookie reuse
-- **Parallel fetching** of timetable and homework for multiple weeks
-- **Teacher initials resolution** with caching
-- **Homework integration** merged into timetable events
-- **Export to JSON** for easy integration with other tools
-- **Configurable week ranges** (current, past, future, or all)
-- **Robust error handling** and detailed logging
-- **CLI interface** with many options
-- **Docker support** for easy deployment
-- **Hybrid Playwright + API extraction** with intelligent fallback mechanisms
-- **Per-account data and cookie management** for multiple users
-- **Caching of teacher maps and student info** to optimize repeated runs
+- **Automatic Hybrid Extraction:** Uses fast `httpx` API calls when possible (valid cookies/student info found), seamlessly falling back to Playwright browser automation for login/data retrieval only when necessary.
+- **Efficient Authentication:** Reuses saved cookies and student info to bypass repeated Playwright logins.
+- **Parallel fetching** of timetable and homework for multiple weeks.
+- **Teacher initials resolution** with caching.
+- **Homework integration** merged into timetable events.
+- **Export to JSON** for easy integration with other tools.
+- **Configurable week ranges** (current, past, future, or all).
+- **Robust error handling** and detailed logging.
+- **CLI interface** with comprehensive options.
+- **Per-account data and cookie management** for multiple users.
+- **Caching of teacher maps and student info** to optimize repeated runs.
 
 ---
 
 ## Architecture
 
-The project is structured into several layers:
+The system features a modular architecture separating concerns like authentication, API interaction, data parsing, and storage.
 
-### Authentication Layer
-- **Playwright login** (`auth.py`)
-- **Cookie management** (`cookie_auth.py`)
-- **Account management** (`account_manager.py`)
-
-### API Client Layer
-- **`api_client.py`**: Async httpx client for timetable, homework, teacher map, weeks
-- Handles retries, DNS checks, and raw response saving
-
-### Service Layer
-- **Interfaces and implementations** in `services.py`
-- **Factory** in `service_factory.py` wires services together
-- Supports Playwright and API-based extraction
-
-### Navigation & Extraction
-- **`navigation.py`** orchestrates week processing
-- **`extractors/`** parse timetable and homework HTML
-
-### Data Models
-- **Pydantic models** in `models.py`
-- **Domain entities** in `domain.py`
-
-### Storage
-- **Exports** JSON files to `glasir_timetable/weeks/` or custom dir
-- **Caches** teacher map, credentials, cookies in `glasir_timetable/accounts/`
-
-### Configuration & Error Handling
-- Constants in `constants.py`
-- Error collection in `__init__.py`
-
-The architecture is built around a set of **service interfaces** (AuthenticationService, ExtractionService, NavigationService, etc.) with multiple implementations. The system prefers API-based extraction for speed and reliability, but automatically falls back to Playwright scraping if API calls fail. This layered, fallback-driven design ensures robust operation even if parts of the system change or fail.
-
----
-
-## Architecture Diagram
-
-```mermaid
-flowchart TD
-
-  subgraph Auth
-    A1[Playwright Login]
-    A2[Cookie Management]
-    A3[Account Manager]
-  end
-
-  subgraph API
-    B1[API Client - httpx]
-    B2[Homework Fetch]
-    B3[Timetable Fetch]
-    B4[Teacher Map Fetch]
-  end
-
-  subgraph Services
-    S1[AuthenticationService]
-    S2[ExtractionService]
-    S3[NavigationService]
-    S4[FormattingService]
-    S5[StorageService]
-  end
-
-  subgraph Data
-    D1[Models (Pydantic)]
-    D2[Domain Entities]
-    D3[JSON Exports]
-  end
-
-  A1 --> A2
-  A2 --> A3
-  A3 --> S1
-
-  S1 --> B1
-  B1 --> B2
-  B1 --> B3
-  B1 --> B4
-
-  S2 --> B1
-  S3 --> B1
-
-  S4 --> D1
-  S4 --> D2
-
-  S5 --> D3
-```
+For a detailed explanation and diagrams, see the [Architecture Documentation](docs/architecture.md).
 
 ---
 
 ## Usage
 
-Basic example:
+Basic example to extract the current week, plus 2 weeks forward and 2 weeks backward:
 
 ```bash
-python3 -m glasir_timetable.main --weekforward 2 --weekbackward 2
+python3 -m glasir_timetable --weekforward 2 --weekbackward 2
 ```
-
-This extracts the current week, plus 2 weeks forward and 2 weeks backward.
 
 ### Command-line Options
 
 - `--username`: Glasir username (without @glasir.fo)
 - `--password`: Glasir password
-- `--credentials-file`: JSON file with credentials (default: glasir_timetable/credentials.json)
+- `--credentials-file`: JSON file with credentials (default: `glasir_timetable/accounts/<username>/credentials.json`)
 - `--weekforward`: Weeks forward to extract
 - `--weekbackward`: Weeks backward to extract
 - `--all-weeks`: Extract all available weeks
-- `--output-dir`: Directory for exports (default: glasir_timetable/weeks)
+- `--output-dir`: Directory for exports (default: `output/`)
 - `--headless`: Run browser headless (default: true)
-- `--log-level`: Logging level
-- `--log-file`: Log to file
+- `--log-level`: Logging level (e.g., INFO, DEBUG)
+- `--log-file`: Log to a specified file
 - `--collect-error-details`: Collect detailed error info
 - `--collect-tracebacks`: Collect tracebacks
-- `--enable-screenshots`: Save screenshots on errors
-- `--error-limit`: Max errors per category
-- `--use-cookies`: Use saved cookies (default: true)
-- `--cookie-path`: Path for cookies file
-- `--no-cookie-refresh`: Disable cookie refresh
-- `--teacherupdate`: Update teacher cache
-- `--skip-timetable`: Skip timetable extraction
+- `--enable-screenshots`: Save screenshots on browser errors
+- `--error-limit`: Max errors per category before stopping
+- `--use-cookies`: Use saved cookies for login (default: true)
+- `--cookie-path`: Path for cookies file (default: `glasir_timetable/accounts/<username>/cookies.json`)
+- `--no-cookie-refresh`: Disable automatic cookie refresh
+- `--teacherupdate`: Force update of the teacher cache
+- `--skip-timetable`: Skip timetable extraction (e.g., only fetch homework)
 
 ---
 
 ## Output Format
 
-Exports JSON files like:
+Exports JSON files per week to the specified output directory. Example (`output/week_2023_10.json`):
 
 ```json
 {
@@ -171,13 +85,14 @@ Exports JSON files like:
       "lessonId": "1234567",
       "startTime": "08:15",
       "endTime": "10:00",
-      "dayOfWeek": 1,
+      "dayOfWeek": 1, // Monday
       "subject": "Mathematics",
       "room": "A1.02",
       "teacher": "John Doe",
       "teacherInitials": "JDO",
       "description": "Homework: Complete exercises 1-10 on page 42"
     }
+    // ... more events
   ]
 }
 ```
@@ -186,16 +101,24 @@ Exports JSON files like:
 
 ## Installation
 
-See [INSTALLATION.md](INSTALLATION.md) for detailed instructions.
+See [INSTALLATION.md](INSTALLATION.md) for detailed setup instructions.
+
+---
+
+## Testing
+
+The project uses `pytest` for running tests. Mocks are utilized to isolate components during unit testing.
+
+For details on the testing strategy and how to run tests, see the [Testing Documentation](docs/testing.md).
 
 ---
 
 ## Contributing
 
-Contributions welcome! Please fork, create a branch, and submit a pull request.
+Contributions are welcome! Please fork the repository, create a feature branch, and submit a pull request.
 
 ---
 
 ## License
 
-MIT License. See LICENSE file.
+MIT License. See the LICENSE file for details.
