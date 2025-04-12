@@ -16,6 +16,10 @@ python-dotenv = "^1.0.0"
 pydantic = "^2.0.0"
 lxml = "^4.9.0"
 httpx = "^0.25.0"
+cachetools = "^5.3.3" # Added for TTL caching
+orjson = "^3.0.0"
+uvloop = "^0.17.0" # Added for performance
+aiofiles = "^23.2.1" # Added for async file I/O
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"

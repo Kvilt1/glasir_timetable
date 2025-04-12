@@ -1,22 +1,25 @@
 import os
-import json
+import orjson
+import aiofiles # Added for async file I/O
 from typing import Dict, Any, Optional
 from datetime import datetime # Import datetime
 from glasir_timetable.shared import logger
 from glasir_timetable.shared.date_utils import to_iso_date
 
-def save_json(data: Dict[str, Any], path: str) -> bool:
+async def save_json(data: Dict[str, Any], path: str) -> bool:
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        async with aiofiles.open(path, "w", encoding="utf-8") as f:
+            # Use orjson for faster serialization, ensuring indentation and newline
+            options = orjson.OPT_INDENT_2 | orjson.OPT_APPEND_NEWLINE
+            await f.write(orjson.dumps(data, option=options).decode('utf-8'))
         logger.info("Saved JSON successfully")
         return True
     except Exception:
         logger.error("Failed to save JSON")
         return False
 
-def save_timetable_export(
+async def save_timetable_export(
     timetable_data: Dict[str, Any],
     output_dir: str,
     filename: Optional[str] = None,
@@ -62,5 +65,5 @@ def save_timetable_export(
     user_dir = output_dir
     os.makedirs(user_dir, exist_ok=True)
     path = os.path.join(user_dir, filename)
-    save_json(timetable_data, path)
+    await save_json(timetable_data, path)
     return path

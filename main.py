@@ -95,10 +95,26 @@ async def main():
         handler.setLevel(log_level)
 
     # ---- ACCOUNT SELECTION ----
-    # Use imported function
-    # AccountManager might be needed implicitly by select_account or load_config
-    # Keep AccountManager import at top level
-    selected_username, profile_created = select_account() # Capture the tuple
+    profile_manager = ProfileManager.get_instance() # Get instance for checking
+
+    if args.account:
+        # Account specified via command line
+        selected_username = args.account
+        profile_created = False # Assume existing profile when specified via arg
+        logger.info(f"Account '{selected_username}' specified via --account argument.")
+
+        # Validate if the specified profile exists
+        if not profile_manager.profile_exists(selected_username):
+            logger.error(f"Error: Account profile '{selected_username}' specified via --account does not exist.")
+            sys.exit(1) # Exit gracefully
+        else:
+            logger.debug(f"Validated existence of profile: {selected_username}")
+
+    else:
+        # No account specified, use interactive selection
+        logger.debug("No --account argument provided, proceeding with interactive selection.")
+        # Use imported function
+        selected_username, profile_created = select_account() # Capture the tuple
 
     if selected_username is None:
         logger.error("No accounts found. Please create an account before running the timetable extraction.")
@@ -106,7 +122,7 @@ async def main():
 
     # Use imported function
     # Pass the profile_created flag to load_config
-    config = load_config(args, selected_username, profile_created=profile_created)
+    config = await load_config(args, selected_username, profile_created=profile_created)
 
     # Removed outdated Playwright setup and service factory logic.
     # This is now handled within the Application/Orchestrator structure.
@@ -140,6 +156,15 @@ if __name__ == "__main__":
     project_root = os.path.abspath(os.path.dirname(__file__))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
+
+    # Install uvloop for potential performance gains
+    try:
+        import uvloop
+        uvloop.install()
+        logger.info("Using uvloop for asyncio event loop.")
+    except ImportError:
+        logger.warning("uvloop not found, using standard asyncio event loop.")
+        pass # Fallback to standard asyncio loop if uvloop is not installed
 
     # Check for --profile argument *without* consuming other arguments
     profile_enabled = "--profile" in sys.argv

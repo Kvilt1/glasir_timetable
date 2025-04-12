@@ -5,7 +5,9 @@ from playwright.async_api import Page, Error as PlaywrightError
 from glasir_timetable.shared import logger
 from glasir_timetable.storage.profile_manager import ProfileManager
 
-
+# Compiled regex patterns for performance
+_RE_GUID = re.compile(r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}")
+_RE_NAME_CLASS = re.compile(r"N[æ&aelig;]mingatímatalva:\s*([^,<]+?)\s*,\s*([^\s<]+)", re.IGNORECASE)
 async def _extract_student_info_from_page(page: Page) -> Optional[Dict[str, Any]]:
     """
     Extracts student ID, name, and class from the timetable page content.
@@ -28,7 +30,7 @@ async def _extract_student_info_from_page(page: Page) -> Optional[Dict[str, Any]
     student_info = {"id": None, "name": None, "class": None}
 
     # Extract GUID (Student ID)
-    guid_match = re.search(r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}", content)
+    guid_match = _RE_GUID.search(content)
     if guid_match:
         student_info["id"] = guid_match.group(0).strip()
         logger.debug(f"Extracted student ID: {student_info['id']}")
@@ -39,7 +41,7 @@ async def _extract_student_info_from_page(page: Page) -> Optional[Dict[str, Any]
 
     # Extract name and class
     # Regex updated slightly to be more robust against variations
-    name_class_match = re.search(r"N[æ&aelig;]mingatímatalva:\s*([^,<]+?)\s*,\s*([^\s<]+)", content, re.IGNORECASE)
+    name_class_match = _RE_NAME_CLASS.search(content)
     if name_class_match:
         student_info["name"] = name_class_match.group(1).strip()
         student_info["class"] = name_class_match.group(2).strip()

@@ -1,8 +1,16 @@
 import os
-import json
+import orjson
 import shutil
+import aiofiles # Added for async file I/O
 from pathlib import Path
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
+
+from ..shared.constants import (
+    CONCURRENCY_CONFIG_FILENAME,
+    DEFAULT_WEEK_FETCH_CONCURRENCY, # Corrected name
+    DEFAULT_HOMEWORK_FETCH_CONCURRENCY, # Corrected name
+    DEFAULT_WEEK_PROCESS_CONCURRENCY, # Added default for processing
+)
 
 # Assuming AccountProfile will be moved here or its definition adjusted
 # For now, let's define a minimal structure or import from the old location
@@ -19,45 +27,78 @@ class ProfileData:
         self.credentials_path = self.base_dir / "credentials.json"
         self.cookies_path = self.base_dir / "cookies.json"
         self.student_info_path = self.base_dir / "student-id.json"
-        self.weeks_dir = self.base_dir / "weeks" # Assuming timetable data is stored here
+        self.weeks_dir = self.base_dir / "weeks"  # Assuming timetable data is stored here
+        self.concurrency_config_path = self.base_dir / CONCURRENCY_CONFIG_FILENAME
 
-    def _load_json(self, path: Path) -> Optional[Dict[str, Any]]:
+    async def _load_json(self, path: Path) -> Optional[Dict[str, Any]]:
         if not path.exists():
             return None
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
+            async with aiofiles.open(path, "r", encoding="utf-8") as f:
+                # Read the whole file content and parse with orjson
+                content = await f.read()
+                return orjson.loads(content)
+        except (orjson.JSONDecodeError, IOError) as e:
             # TODO: Replace with proper logging
             print(f"Error loading JSON from {path}: {e}")
             return None
 
-    def _save_json(self, path: Path, data: Dict[str, Any]) -> None:
+    async def _save_json(self, path: Path, data: Dict[str, Any]) -> None:
         try:
             self.base_dir.mkdir(parents=True, exist_ok=True) # Ensure dir exists
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            async with aiofiles.open(path, "w", encoding="utf-8") as f:
+                # Use orjson for faster serialization with indentation and newline
+                options = orjson.OPT_INDENT_2 | orjson.OPT_APPEND_NEWLINE
+                await f.write(orjson.dumps(data, option=options).decode('utf-8'))
         except IOError as e:
             # TODO: Replace with proper logging
             print(f"Error saving JSON to {path}: {e}")
 
-    def load_credentials(self) -> Optional[Dict[str, Any]]:
-        return self._load_json(self.credentials_path)
+    async def load_credentials(self) -> Optional[Dict[str, Any]]:
+        return await self._load_json(self.credentials_path)
 
-    def save_credentials(self, credentials: Dict[str, Any]) -> None:
-        self._save_json(self.credentials_path, credentials)
+    async def save_credentials(self, credentials: Dict[str, Any]) -> None:
+        await self._save_json(self.credentials_path, credentials)
 
-    def load_cookies(self) -> Optional[Dict[str, Any]]:
-        return self._load_json(self.cookies_path)
+    async def load_cookies(self) -> Optional[Dict[str, Any]]:
+        return await self._load_json(self.cookies_path)
 
-    def save_cookies(self, cookies: Dict[str, Any]) -> None:
-        self._save_json(self.cookies_path, cookies)
+    async def save_cookies(self, cookies: Dict[str, Any]) -> None:
+        await self._save_json(self.cookies_path, cookies)
 
-    def load_student_info(self) -> Optional[Dict[str, Any]]:
-        return self._load_json(self.student_info_path)
+    async def load_student_info(self) -> Optional[Dict[str, Any]]:
+        return await self._load_json(self.student_info_path)
 
-    def save_student_info(self, info: Dict[str, Any]) -> None:
-        self._save_json(self.student_info_path, info)
+    async def save_student_info(self, info: Dict[str, Any]) -> None:
+        await self._save_json(self.student_info_path, info)
+
+    async def load_concurrency_config(self) -> Dict[str, int]:
+        """
+        Loads concurrency limits from the profile's config file.
+
+        Returns:
+            A dictionary with 'week_fetch_limit', 'homework_fetch_limit', and 'week_process_limit'.
+            Returns default values if the file doesn't exist or is invalid.
+        """
+        config_data = await self._load_json(self.concurrency_config_path)
+        if config_data is None:
+            # Return defaults if file not found or error during load
+            return {
+                "week_fetch_limit": DEFAULT_WEEK_FETCH_CONCURRENCY, # Corrected name
+                "homework_fetch_limit": DEFAULT_HOMEWORK_FETCH_CONCURRENCY, # Corrected name
+                "week_process_limit": DEFAULT_WEEK_PROCESS_CONCURRENCY, # Added default
+            }
+        # Validate or provide defaults for missing keys? For now, assume structure or defaults.
+        # Let's ensure the keys exist, falling back to defaults if necessary.
+        return {
+            "week_fetch_limit": config_data.get("week_fetch_limit", DEFAULT_WEEK_FETCH_CONCURRENCY), # Corrected name
+            "homework_fetch_limit": config_data.get("homework_fetch_limit", DEFAULT_HOMEWORK_FETCH_CONCURRENCY), # Corrected name
+            "week_process_limit": config_data.get("week_process_limit", DEFAULT_WEEK_PROCESS_CONCURRENCY), # Added loading with default
+        }
+
+    async def save_concurrency_config(self, config_data: Dict[str, int]) -> None:
+        """Saves the concurrency limits (fetch and process) to the profile's config file."""
+        await self._save_json(self.concurrency_config_path, config_data)
 
     def __repr__(self):
         return f"<ProfileData(username={self.username}, base_dir={self.base_dir})>"
@@ -146,7 +187,7 @@ class ProfileManager:
         self._profiles_cache[username] = profile
         return profile
 
-    def create_profile(self, username: str, credentials: Optional[Dict] = None) -> ProfileData:
+    async def create_profile(self, username: str, credentials: Optional[Dict] = None) -> ProfileData:
         """
         Creates a new profile directory and initializes basic files.
 
@@ -174,11 +215,11 @@ class ProfileManager:
 
         # Save credentials if provided
         if credentials:
-            profile.save_credentials(credentials)
+            await profile.save_credentials(credentials)
 
         # Initialize student info if missing (create empty file)
         if not profile.student_info_path.exists():
-            profile.save_student_info({}) # Save empty dict
+            await profile.save_student_info({}) # Save empty dict
 
         # Ensure weeks directory exists
         profile.weeks_dir.mkdir(exist_ok=True)
@@ -255,6 +296,7 @@ class ProfileManager:
             profile.cookies_path = profile.base_dir / "cookies.json"
             profile.student_info_path = profile.base_dir / "student-id.json"
             profile.weeks_dir = profile.base_dir / "weeks"
+            profile.concurrency_config_path = profile.base_dir / CONCURRENCY_CONFIG_FILENAME
             self._profiles_cache[new_username] = profile
 
     def get_all_profiles(self) -> Dict[str, ProfileData]:

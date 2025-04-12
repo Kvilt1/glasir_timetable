@@ -17,7 +17,7 @@ from glasir_timetable import logger
 from glasir_timetable.storage.profile_manager import ProfileManager, ProfileData # Import ProfileData too
 from glasir_timetable.interface.cli import prompt_for_credentials
 # (No direct import for is_full_auth_data_valid needed; logic uses profile methods)
-def load_config(args, selected_username, profile_created: bool = False): # Add profile_created flag
+async def load_config(args, selected_username, profile_created: bool = False): # Add profile_created flag
     profile_manager = ProfileManager.get_instance()
     """
     Prepare and validate configuration based on CLI args and selected username.
@@ -41,6 +41,10 @@ def load_config(args, selected_username, profile_created: bool = False): # Add p
     except Exception as e:
         logger.error(f"Failed to load profile '{selected_username}': {e}")
         exit(f"Error loading profile: {e}")
+
+    # --- 1.5 Load Concurrency Config ---
+    concurrency_config = await profile.load_concurrency_config()
+    logger.info(f"Loaded concurrency config: {concurrency_config}")
 
     # --- 2. Update Args/Defaults with Profile Paths ---
     # Args might still be used elsewhere, update them if necessary,
@@ -69,26 +73,26 @@ def load_config(args, selected_username, profile_created: bool = False): # Add p
 
     # --- 3. Handle Credentials ---
     # Profile loading already handled above
-    credentials = profile.load_credentials()
+    credentials = await profile.load_credentials()
     # Only prompt for credentials if the profile wasn't *just* created AND they are missing/invalid
     if not profile_created and (not credentials or "username" not in credentials or "password" not in credentials):
         logger.warning("Credentials file missing or incomplete. Prompting user.")
         credentials = prompt_for_credentials(selected_username)
-        profile.save_credentials(credentials)
+        await profile.save_credentials(credentials)
     elif not credentials:
         # This case should ideally not happen if profile_created is True,
         # as cli.py should have saved them. Log a warning if it does.
         logger.error("Profile was just created, but credentials could not be loaded. This indicates an issue.")
         # Attempt to prompt anyway as a fallback, though this might indicate a deeper problem.
         credentials = prompt_for_credentials(selected_username)
-        profile.save_credentials(credentials)
+        await profile.save_credentials(credentials)
     # --- 4. Determine API-only Mode (Automatically based on auth data) ---
     api_only_mode = False
     cached_student_info = None
     auth_valid = False
     try:
-        cookie_data = profile.load_cookies()
-        student_info = profile.load_student_info()
+        cookie_data = await profile.load_cookies()
+        student_info = await profile.load_student_info()
         cookies_are_valid = is_cookies_valid(cookie_data)
         student_info_is_valid = student_info is not None and "id" in student_info
 
@@ -122,6 +126,8 @@ def load_config(args, selected_username, profile_created: bool = False): # Add p
         "credentials": credentials,
         "api_only_mode": api_only_mode,
         "cached_student_info": cached_student_info,
+        "concurrency_config": concurrency_config, # Add loaded concurrency settings
+        "force_max_concurrency": args.force_max_concurrency, # Add the new flag
         # Add other relevant config derived from args or profile as needed
     }
 

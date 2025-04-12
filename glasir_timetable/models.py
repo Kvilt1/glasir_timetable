@@ -198,5 +198,8 @@ class TimetableData(BaseModel):
     
     def to_json(self) -> str:
         """Convert TimetableData to a JSON string with camelCase keys."""
-        import json
-        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2) 
+        import orjson
+        # Use orjson for faster serialization with indentation
+        options = orjson.OPT_INDENT_2
+        # orjson dumps to bytes, so decode to utf-8 string
+        return orjson.dumps(self.to_dict(), option=options).decode('utf-8')

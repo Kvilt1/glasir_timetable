@@ -9,6 +9,13 @@ from glasir_timetable.shared.formatting import (
     format_academic_year,
     # format_iso_date # Removed, using to_iso_date from date_utils
 )
+
+# Compiled regex patterns for performance
+_RE_STUDENT_INFO = re.compile(r"N[æ&aelig;]mingatímatalva:\s*([^,]+),\s*([^\s<]+)", re.IGNORECASE)
+_RE_DATE_RANGE = re.compile(r"(\d{1,2}\.\d{1,2}\.\d{4})\s*-\s*(\d{1,2}\.\d{1,2}\.\d{4})")
+_RE_DAY_DATE = re.compile(r"(\w+)\s+(\d{1,2}/\d{1,2})")
+_RE_NOTE_ONCLICK_ID = re.compile(r"'([A-F0-9-]+)&")
+_RE_NOTE_IMG_SRC = re.compile(r'note\.gif') # Already compiled in usage, but good to have here
 def get_timeslot_info(start_col_index):
     """
     Maps the starting column index of a lesson TD to its time slot.
@@ -47,10 +54,18 @@ def parse_timetable_html(html: str, teacher_map: Optional[Dict[str, str]] = None
         teacher_map = {}
 
     try:
+        # Pre-filtering removed - lxml handles scripts/styles/comments efficiently.
+        # # Remove script blocks
+        # html = re.sub(r'<script.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        # # Remove style blocks
+        # html = re.sub(r'<style.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        # # Remove HTML comments
+        # html = re.sub(r'<!--.*?-->', '', html, flags=re.DOTALL)
+        # Now parse the potentially smaller HTML string
         soup = BeautifulSoup(html, "lxml")
 
         # Extract student info
-        m = re.search(r"N[æ&aelig;]mingatímatalva:\s*([^,]+),\s*([^\s<]+)", html, re.IGNORECASE)
+        m = _RE_STUDENT_INFO.search(html)
         if m:
             timetable_data["studentInfo"] = {
                 "studentName": m.group(1).strip(),
@@ -58,14 +73,14 @@ def parse_timetable_html(html: str, teacher_map: Optional[Dict[str, str]] = None
             }
 
         # Extract week number and date range
-        week_link = soup.find('a', class_='UgeKnapValgt')
+        week_link = soup.select_one('a.UgeKnapValgt') # Use select_one
         if week_link:
             week_text = week_link.get_text(strip=True)
             if week_text.startswith("Vika "):
                 timetable_data["weekInfo"]["weekNumber"] = int(week_text.replace("Vika ", ""))
 
         # Relaxed day/month regex to handle single digits (e.g., 1.4.2024)
-        date_range_match = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})\s*-\s*(\d{1,2}\.\d{1,2}\.\d{4})", html)
+        date_range_match = _RE_DATE_RANGE.search(html)
         if date_range_match:
             start_date_str = date_range_match.group(1)
             end_date_str = date_range_match.group(2)
@@ -74,12 +89,12 @@ def parse_timetable_html(html: str, teacher_map: Optional[Dict[str, str]] = None
             timetable_data["weekInfo"]["endDate"] = to_iso_date(end_date_str)
 
         # Parse lessons with day and time info
-        table = soup.find('table', class_='time_8_16')
+        table = soup.select_one('table.time_8_16') # Use select_one
         if not table:
             logger.warning("Timetable table not found")
             return timetable_data, homework_ids
 
-        rows = table.find_all('tr', recursive=False)
+        rows = table.select('tr') # Select descendant tr elements
         current_day_name_fo = None
         current_date_part = None
         current_year = None
@@ -100,13 +115,13 @@ def parse_timetable_html(html: str, teacher_map: Optional[Dict[str, str]] = None
              current_year = None # No start date found yet
 
         for row in rows:
-            cells = row.find_all('td', recursive=False)
+            cells = row.select('td') # Select descendant td elements
             if not cells:
                 continue
 
             first_cell = cells[0]
             first_cell_text = first_cell.get_text(separator=' ').strip()
-            day_match = re.match(r"(\w+)\s+(\d{1,2}/\d{1,2})", first_cell_text)
+            day_match = _RE_DAY_DATE.match(first_cell_text)
 
             is_day_header = 'lektionslinje_1' in first_cell.get('class', []) or \
                             'lektionslinje_1_aktuel' in first_cell.get('class', [])
@@ -137,7 +152,7 @@ def parse_timetable_html(html: str, teacher_map: Optional[Dict[str, str]] = None
                 is_cancelled = any(cls in CANCELLED_CLASS_INDICATORS for cls in classes)
 
                 if is_lesson and current_day_name_fo:
-                    a_tags = cell.find_all('a')
+                    a_tags = cell.select('a') # Use select
                     if len(a_tags) >= 3:
                         class_code_raw = a_tags[0].get_text(strip=True)
                         teacher_short = a_tags[1].get_text(strip=True)
@@ -192,10 +207,11 @@ def parse_timetable_html(html: str, teacher_map: Optional[Dict[str, str]] = None
                         }
 
                         # Check for homework icon
-                        note_img = cell.find('input', {'type': 'image', 'src': re.compile(r'note\.gif')})
+                        # Use select_one with attribute selector (contains 'note.gif')
+                        note_img = cell.select_one('input[type="image"][src*="note.gif"]')
                         if note_img:
                             onclick = note_img.get('onclick', '')
-                            m = re.search(r"'([A-F0-9-]+)&", onclick)
+                            m = _RE_NOTE_ONCLICK_ID.search(onclick)
                             if m:
                                 lesson_id = m.group(1)
                                 lesson["lessonId"] = lesson_id

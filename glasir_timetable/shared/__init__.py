@@ -28,4 +28,7 @@ from glasir_timetable.shared.error_utils import (
     JavaScriptError,
 )
 
-# Import additional utility functions as needed 
+# Import concurrency manager
+from .concurrency_manager import ConcurrencyManager
+
+# Import additional utility functions as needed

@@ -19,7 +19,8 @@ class Application:
         self.output_dir = config.get("output_dir")
         self.student_id_path = config.get("student_id_path")
         self.profile = config.get("profile") # Add profile attribute from config
-
+        self.concurrency_config = config.get("concurrency_config") # Add concurrency config attribute
+        self.force_max_concurrency = self.args.force_max_concurrency if self.args else False # Read from args
         # Placeholder for runtime state
         self.logger = None
         self.services = {}

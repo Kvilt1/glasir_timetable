@@ -24,6 +24,7 @@ def parse_args():
     parser.add_argument('--log-level', type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         default='INFO', help='Set the logging level')
     parser.add_argument('--log-file', type=str, default='output/logs/glasir_timetable.log', help='Log to a file instead of console (default: output/logs/glasir_timetable.log)')
+    parser.add_argument('--account', type=str, default=None, help='Specify the account profile username directly, skipping interactive selection')
     parser.add_argument('--collect-error-details', action='store_true', help='Collect detailed error information')
     parser.add_argument('--collect-tracebacks', action='store_true', help='Collect tracebacks for errors')
     parser.add_argument('--enable-screenshots', action='store_true', help='Enable screenshots on errors')
@@ -36,6 +37,7 @@ def parse_args():
     parser.add_argument('--skip-timetable', action='store_true', help='Skip timetable extraction, useful when only updating teachers')
     parser.add_argument('--save-raw-responses', action='store_true', help='Save raw API responses before parsing')
     parser.add_argument('--raw-responses-dir', type=str, default='output/raw_responses/', help='Directory to save raw API responses (default: output/raw_responses/)')
+    parser.add_argument('--force-max-concurrency', action='store_true', default=False, help='Force concurrency to predefined maximum limits for this run (does not save)')
     args = parser.parse_args()
     return args
 

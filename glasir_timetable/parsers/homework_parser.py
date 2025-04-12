@@ -3,6 +3,11 @@ from bs4 import BeautifulSoup, Tag
 from typing import Dict
 import re
 
+# Compiled regex patterns for performance
+_RE_SPACE_BEFORE_NEWLINE = re.compile(r' +\n')
+_RE_SPACE_AFTER_NEWLINE = re.compile(r'\n +')
+# _RE_MULTIPLE_NEWLINES = re.compile(r'\n{3,}') # Keep original newlines for now
+
 # Assuming logger is configured elsewhere, e.g., in shared/__init__.py
 logger = logging.getLogger(__name__)
 
@@ -22,7 +27,7 @@ def parse_homework_html(html: str) -> Dict[str, str]:
         soup = BeautifulSoup(html, "lxml")
 
         # 1. Find the hidden input field for LektionsID and extract lesson_id
-        lesson_id_input = soup.find('input', type='hidden', id=re.compile(r'^LektionsID'))
+        lesson_id_input = soup.select_one('input[type="hidden"][id^="LektionsID"]') # Use CSS selector
         if not lesson_id_input:
             logger.warning("Could not find LektionsID input field in homework HTML.")
             return result
@@ -121,8 +126,8 @@ def parse_homework_html(html: str) -> Dict[str, str]:
 
         # Clean up whitespace:
         # 1. Remove spaces immediately surrounding newlines
-        homework_text = re.sub(r' +\n', '\n', homework_text)
-        homework_text = re.sub(r'\n +', '\n', homework_text)
+        homework_text = _RE_SPACE_BEFORE_NEWLINE.sub('\n', homework_text)
+        homework_text = _RE_SPACE_AFTER_NEWLINE.sub('\n', homework_text)
         # 2. Consolidate multiple newlines into max two (like paragraphs) - Keep single newlines as they are
         # homework_text = re.sub(r'\n{3,}', '\n\n', homework_text) # Keep original newlines
         # 3. Strip leading/trailing whitespace/newlines from the final string

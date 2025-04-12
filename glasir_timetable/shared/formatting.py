@@ -3,11 +3,13 @@
 Utility functions for formatting and date handling.
 """
 import re
+from functools import lru_cache
 from glasir_timetable.shared.date_utils import to_iso_date # Removed unused convert_date_format, normalize_dates, parse_time_range
 
 # def format_date(date_str, year): # Removed as unused
 #     """Format date from DD/MM to YYYY-MM-DD"""
 #     pass # Function removed
+@lru_cache()
 def format_academic_year(year_code):
     """
     Parse year code like '2425' into '2024-2025'

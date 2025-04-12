@@ -60,7 +60,25 @@ DEFAULT_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
 }
 
-# Default fallback values
+# Cache settings
+TEACHER_MAP_CACHE_TTL = 86400  # 24 hours in seconds
+# --- Concurrency Settings ---
+
+# Default limits (used when no dynamic config exists or dynamic fails)
+DEFAULT_WEEK_FETCH_CONCURRENCY = 5   # Default parallel week HTML fetch requests (Producer)
+DEFAULT_HOMEWORK_FETCH_CONCURRENCY = 20  # Default parallel homework detail requests
+DEFAULT_WEEK_PROCESS_CONCURRENCY = 4 # Default parallel week data processing tasks (Consumer) - Adjust based on CPU/IO
+
+# Maximum limits (used for --force-max-concurrency flag)
+# These represent reasonable upper bounds to avoid overwhelming the server.
+FORCE_MAX_WEEK_FETCH_CONCURRENCY = 10
+FORCE_MAX_HOMEWORK_FETCH_CONCURRENCY = 30
+
+# Initial values for dynamic limits (will be loaded from profile config if available)
+# These constants are primarily for reference or initial setup if needed elsewhere.
+INITIAL_WEEK_FETCH_LIMIT = DEFAULT_WEEK_FETCH_CONCURRENCY
+INITIAL_HOMEWORK_FETCH_LIMIT = DEFAULT_HOMEWORK_FETCH_CONCURRENCY
+# Default fallback values (Note: These seem redundant with the INITIAL_ constants above, consider consolidating if appropriate)
 
 # File paths
 TEACHER_CACHE_FILE = "glasir_timetable/accounts/global/teacher_cache.json"
@@ -71,3 +89,6 @@ AUTH_COOKIES_FILE = "cookies.json"
 
 # Data directory for storing timetable data
 DATA_DIR = "glasir_timetable/weeks"
+
+# Concurrency config file name
+CONCURRENCY_CONFIG_FILENAME = "concurrency_config.json"
