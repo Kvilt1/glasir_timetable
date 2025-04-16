@@ -114,7 +114,7 @@ async def main():
         # No account specified, use interactive selection
         logger.debug("No --account argument provided, proceeding with interactive selection.")
         # Use imported function
-        selected_username, profile_created = select_account() # Capture the tuple
+        selected_username, profile_created = await select_account() # Capture the tuple
 
     if selected_username is None:
         logger.error("No accounts found. Please create an account before running the timetable extraction.")

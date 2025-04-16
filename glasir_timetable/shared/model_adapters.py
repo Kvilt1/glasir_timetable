@@ -29,10 +29,3 @@ T = TypeVar('T')
 #     ... (rest of docstring and code) ...
 #     """
 #     pass # Function removed
-
-# def timetable_data_to_dict(...): # Removed as unused
-#     """
-#     Convert a TimetableData model to a dictionary.
-#     ... (rest of docstring and code) ...
-#     """
-#     pass # Function removed

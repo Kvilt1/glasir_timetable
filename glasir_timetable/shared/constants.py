@@ -40,11 +40,8 @@ CANCELLED_CLASS_INDICATORS = [
     'lektionslinje_lessoncancelled'
 ]
 
-# DAY_MAP_DA_TO_EN = DAY_NAME_MAPPING # Removed as unused
 
-# TIME_SLOTS_REAL = [...] # Removed as unused
 
-# LEVEL_MAP = {...} # Removed as unused
 
 # URLs
 GLASIR_BASE_URL = "https://tg.glasir.fo"

@@ -43,7 +43,7 @@ def parse_args():
 
 from typing import Tuple # Add Tuple import
 
-def select_account() -> Tuple[Optional[str], bool]:
+async def select_account() -> Tuple[Optional[str], bool]:
     """
     Interactively prompts the user to select an account profile.
 
@@ -65,7 +65,7 @@ def select_account() -> Tuple[Optional[str], bool]:
             if username and password:
                 try:
                     # Pass the full credentials dictionary
-                    profile_manager.create_profile(username, credentials=credentials)
+                    await profile_manager.create_profile(username, credentials=credentials)
                     print(f"Profile '{username}' created successfully.")
                     # Return the newly created username and True flag
                     return username, True

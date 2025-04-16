@@ -26,21 +26,9 @@ class JavaScriptError(GlasirError):
     """Exception raised for JavaScript-related errors."""
     pass
 
-# class ExtractionError(GlasirError): # Removed as unused
-#     """Exception raised for data extraction errors."""
-#     pass
 
-# class NavigationError(GlasirError): # Removed as unused
-#     """Exception raised for navigation errors."""
-#     pass
 
-# class AuthenticationError(GlasirError): # Removed as unused
-#     """Exception raised for authentication errors."""
-#     pass
 
-# class GlasirScrapingError(ExtractionError): # Removed as unused
-#     """Exception raised for scraping and data extraction errors."""
-#     pass
 
 # Global state management for console listener
 _console_listener_registry = {
@@ -48,32 +36,9 @@ _console_listener_registry = {
     'listeners': {}
 }
 
-# def configure_error_handling(collect_details=False, collect_tracebacks=False, error_limit=100): # Removed as unused
-#     """Configure error handling behavior"""
-#     pass # Function removed
 
-# def handle_errors(...): # Removed as unused
-#     """
-#     Decorator for handling errors in a consistent way.
-#     ... (rest of docstring and code) ...
-#     """
-#     pass # Function removed
 
-# @contextlib.contextmanager # Removed resource_cleanup_context as unused
-# def resource_cleanup_context(...):
-#     """
-#     Context manager for resource cleanup.
-#     ... (rest of docstring and code) ...
-#     """
-#     pass # Function removed
 
-# @contextlib.asynccontextmanager # Removed async_resource_cleanup_context as unused
-# async def async_resource_cleanup_context(...):
-#     """
-#     Async context manager for resource cleanup.
-#     ... (rest of docstring and code) ...
-#     """
-#     pass # Function removed
 
 @contextlib.asynccontextmanager
 async def error_screenshot_context(page, screenshot_name: str, error_type: str = "general_errors", take_screenshot: bool = False):
@@ -116,12 +81,6 @@ async def error_screenshot_context(page, screenshot_name: str, error_type: str =
         # Re-raise the original exception
         raise
 
-# async def evaluate_js_safely(...): # Removed as unused
-#     """
-#     Evaluate JavaScript code safely with proper error handling.
-#     ... (rest of docstring and code) ...
-#     """
-#     pass # Function removed
 
 def register_console_listener(page, listener=None):
     """
@@ -179,10 +138,3 @@ def default_console_listener(msg):
         logger.warning(f"Console warning: {text}")
     else:
         logger.debug(f"Console {message_type}: {text}")
-
-# def unregister_console_listener(page): # Removed as unused
-#     """
-#     Remove console listener from a page.
-#     ... (rest of docstring and code) ...
-#     """
-#     pass # Function removed

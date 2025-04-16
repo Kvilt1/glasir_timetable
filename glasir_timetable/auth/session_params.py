@@ -11,7 +11,6 @@ LNAME_PATTERNS = [
     re.compile(r"name=['\"]lname['\"]\s*value=['\"]([^'\"]+)['\"]"),
 ]
 
-# TIMER_PATTERNS removed as timer value is generated dynamically
 
 async def extract_session_params_from_page(page: Page) -> Dict[str, str]:
     """
@@ -37,7 +36,6 @@ def extract_session_params_from_html(html: str) -> Dict[str, str]:
             logger.debug(f"Extracted lname: {lname}")
             break
 
-    # Timer extraction removed - it's generated dynamically elsewhere
     if not lname:
         logger.warning("Could not extract 'lname' from HTML")
     return {"lname": lname}

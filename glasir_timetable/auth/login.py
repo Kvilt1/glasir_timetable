@@ -131,7 +131,7 @@ async def login(page: Page, username: str, password: str, domain: str = "glasir.
             try:
                 # Load the profile corresponding to the username used for login
                 user_profile = profile_manager.load_profile(username)
-                current_info = user_profile.load_student_info()
+                current_info = await user_profile.load_student_info()
 
                 # Check if info is missing or incomplete
                 if not current_info or not all(k in current_info and current_info[k] for k in ("id", "name", "class")):
@@ -150,7 +150,7 @@ async def login(page: Page, username: str, password: str, domain: str = "glasir.
                         merged_info.setdefault("class", "Unknown")
 
                         # Save the updated info using the profile object's method
-                        user_profile.save_student_info(merged_info)
+                        await user_profile.save_student_info(merged_info)
                         logger.info(f"Saved extracted/updated student info for {username}")
                     else:
                         logger.warning(f"Failed to extract student info for {username} after login.")

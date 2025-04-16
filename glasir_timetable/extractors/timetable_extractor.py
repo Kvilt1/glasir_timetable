@@ -71,8 +71,6 @@ class TimetableExtractor:
         force_max_concurrency: bool = False # New flag
     ) -> Dict[str, str]:
         results = {}
-        # Semaphore removed - rely on ConcurrencyManager passed to api.post
-        # sem = asyncio.Semaphore(concurrency_manager.get_limit()) # Removed
         async def fetch_one(lesson_id, force_flag): # Accept flag
             # async with sem: # Removed
             try:

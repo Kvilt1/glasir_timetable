@@ -6,9 +6,6 @@ import re
 from functools import lru_cache
 from glasir_timetable.shared.date_utils import to_iso_date # Removed unused convert_date_format, normalize_dates, parse_time_range
 
-# def format_date(date_str, year): # Removed as unused
-#     """Format date from DD/MM to YYYY-MM-DD"""
-#     pass # Function removed
 @lru_cache()
 def format_academic_year(year_code):
     """
@@ -24,18 +21,6 @@ def format_academic_year(year_code):
 #     ... (rest of docstring and code) ...
 #     """
 #     pass # Function moved
-# def normalize_week_number(week_num): # Removed as unused
-#     """
-#     Normalize week numbers to standard 1-53 range.
-#     ... (rest of docstring and code) ...
-#     """
-#     pass # Function removed
-# def generate_week_filename(...): # Removed as unused
-#     """
-#     Generate a consistent filename for the week.
-#     ... (rest of docstring and code) ...
-#     """
-#     pass # Function removed
 
 def to_camel_case(snake_str):
     """
@@ -52,12 +37,6 @@ def to_camel_case(snake_str):
     # First word lowercase, all others capitalized
     return components[0].lower() + ''.join(x.title() for x in components[1:])
 
-# def convert_keys_to_camel_case(data): # Removed as unused
-#     """
-#     Convert all dictionary keys from snake_case or other formats to camelCase.
-#     ... (rest of docstring and code) ...
-#     """
-#     pass # Function removed
 def format_iso_date(date_str, year=None):
     """
     Format a date string to ISO 8601 format (YYYY-MM-DD).

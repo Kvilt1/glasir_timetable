@@ -181,12 +181,6 @@ def to_iso_date(date_str: str, year: Optional[int] = None) -> Optional[str]:
     # Use our standard converter
     return convert_date_format(date_str, 'iso', year)
 
-# def normalize_dates(start_date, end_date, year): # Removed as unused
-#     """
-#     Normalize date format to ensure consistency.
-#     ... (rest of docstring and code) ...
-#     """
-#     pass # Function removed
 
 def parse_time_range(time_range: str) -> Tuple[Optional[str], Optional[str]]:
     """

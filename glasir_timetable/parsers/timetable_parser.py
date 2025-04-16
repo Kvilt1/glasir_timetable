@@ -55,7 +55,6 @@ def parse_timetable_html(html: str, teacher_map: Optional[Dict[str, str]] = None
 
     try:
         # Pre-filtering removed - lxml handles scripts/styles/comments efficiently.
-        # # Remove script blocks
         # html = re.sub(r'<script.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
         # # Remove style blocks
         # html = re.sub(r'<style.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
