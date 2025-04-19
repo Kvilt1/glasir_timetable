@@ -1,7 +1,6 @@
 import httpx
 from httpx import Limits
 import asyncio
-import time
 from typing import Optional, Dict, Any
 from glasir_timetable.shared import logger
 from glasir_timetable.shared.concurrency_manager import ConcurrencyManager
@@ -36,6 +35,12 @@ class AsyncApiClient:
             limits=limits,
             http2=True  # Enable HTTP/2 negotiation
         )
+
+    async def __aenter__(self):
+        return self
+        
+    async def __aexit__(self, *args):
+        await self.close()
 
     async def close(self):
         await self.client.aclose()

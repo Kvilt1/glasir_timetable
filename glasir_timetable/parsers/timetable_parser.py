@@ -97,8 +97,6 @@ def parse_timetable_html(html: str, teacher_map: Optional[Dict[str, str]] = None
         current_day_name_fo = None
         current_date_part = None
         current_year = None
-        first_date_obj = None
-
         # Try to parse year from the already converted ISO startDate
         start_iso_date = timetable_data.get("weekInfo", {}).get("startDate")
         if start_iso_date:

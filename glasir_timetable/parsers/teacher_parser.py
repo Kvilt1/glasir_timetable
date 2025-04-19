@@ -35,7 +35,7 @@ def parse_teacher_html(html: str) -> Dict[str, str]:
                     if initials not in teacher_map:
                         teacher_map[initials] = full_name
 
-    except Exception as e:
+    except Exception:
         logger.error("Error parsing teacher HTML")
 
     return teacher_map

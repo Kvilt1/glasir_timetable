@@ -6,7 +6,7 @@ This module defines Pydantic models for student information, week information,
 events (classes/lessons), and the overall timetable data structure.
 """
 
-from typing import List, Optional, Union, Dict, Any, Set
+from typing import List, Optional, Union
 from datetime import datetime
 from pydantic import BaseModel, Field, validator, model_validator
 
@@ -15,7 +15,7 @@ class StudentInfo(BaseModel):
     student_name: str = Field(..., alias="studentName")
     class_: str = Field(..., alias="class")
     
-    class Config:
+    class Config:  # noqa: F811 - Pydantic Config class
         populate_by_name = True
         frozen = True
         json_schema_extra = {
@@ -34,7 +34,7 @@ class WeekInfo(BaseModel):
     week_key: Optional[str] = Field(None, alias="weekKey")
     
     @validator("start_date", "end_date")
-    def validate_date_format(cls, v):
+    def validate_date_format(cls, v):  # noqa: F811 - Pydantic validator
         """Validate date is in ISO format (YYYY-MM-DD)."""
         try:
             datetime.strptime(v, "%Y-%m-%d")
@@ -43,20 +43,20 @@ class WeekInfo(BaseModel):
             raise ValueError("Date must be in ISO format (YYYY-MM-DD)")
     
     @validator("week_number")
-    def validate_week_number(cls, v):
+    def validate_week_number(cls, v):  # noqa: F811 - Pydantic validator
         """Validate week number is within range 1-53."""
         if not 1 <= v <= 53:
             raise ValueError("Week number must be between 1 and 53")
         return v
     
     @model_validator(mode='after')
-    def generate_week_key(self):
+    def generate_week_key(self):  # noqa: F811 - Pydantic model validator
         """Generate week_key if not provided."""
         if not self.week_key:
             self.week_key = f"{self.year}-W{self.week_number:02d}"
         return self
     
-    class Config:
+    class Config:  # noqa: F811 - Pydantic Config class
         populate_by_name = True
         frozen = True
         json_schema_extra = {
@@ -88,7 +88,7 @@ class Event(BaseModel):
     description: Optional[str] = None
     
     @validator("date")
-    def validate_date_format(cls, v):
+    def validate_date_format(cls, v):  # noqa: F811 - Pydantic validator
         """Validate date is in ISO format (YYYY-MM-DD)."""
         try:
             datetime.strptime(v, "%Y-%m-%d")
@@ -97,7 +97,7 @@ class Event(BaseModel):
             raise ValueError("Date must be in ISO format (YYYY-MM-DD)")
     
     @validator("start_time", "end_time")
-    def validate_time_format(cls, v):
+    def validate_time_format(cls, v):  # noqa: F811 - Pydantic validator
         """Validate time is in HH:MM format."""
         if not v or not isinstance(v, str):
             return v
@@ -108,7 +108,7 @@ class Event(BaseModel):
         except ValueError:
             raise ValueError("Time must be in HH:MM format")
     
-    class Config:
+    class Config:  # noqa: F811 - Pydantic Config class
         populate_by_name = True
         frozen = True
         json_schema_extra = {
@@ -139,67 +139,19 @@ class TimetableData(BaseModel):
     format_version: int = Field(2, alias="formatVersion")
     
     @validator("format_version")
-    def validate_format_version(cls, v):
+    def validate_format_version(cls, v):  # noqa: F811 - Pydantic validator
         """Validate format version is 2."""
         if v != 2:
             raise ValueError("Format version must be 2")
         return v
     
-    class Config:
+    class Config:  # noqa: F811 - Pydantic Config class
         populate_by_name = True
         frozen = True
 
-    def filter_events_by_day(self, day: str) -> List[Event]:
-        """Filter events by day of the week."""
-        return [event for event in self.events if event.day == day]
-    
-    def filter_events_by_subject(self, subject: str) -> List[Event]:
-        """Filter events by subject/title."""
-        return [event for event in self.events if event.title == subject]
-    
-    def filter_events_by_teacher(self, teacher_short: str) -> List[Event]:
-        """Filter events by teacher initials."""
-        return [event for event in self.events if event.teacher_short == teacher_short]
-    
-    def get_events_for_date(self, date: str) -> List[Event]:
-        """Get events for a specific date."""
-        return [event for event in self.events if event.date == date]
-    
-    def sort_events_by_time(self) -> List[Event]:
-        """Sort events by date and time."""
-        return sorted(
-            self.events, 
-            key=lambda x: (x.date, x.start_time if x.start_time else "")
-        )
-    
-    def get_unique_subjects(self) -> Set[str]:
-        """Get all unique subjects in the timetable."""
-        return {event.title for event in self.events}
-    
-    def get_unique_teachers(self) -> Set[str]:
-        """Get all unique teachers in the timetable."""
-        return {event.teacher_short for event in self.events}
-    
-    def get_events_count_by_day(self) -> Dict[str, int]:
-        """Get count of events by day."""
-        count = {}
-        for event in self.events:
-            count[event.day] = count.get(event.day, 0) + 1
-        return count
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "TimetableData":
-        """Create TimetableData instance from a dictionary."""
-        return cls.model_validate(data)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert TimetableData to a dictionary with camelCase keys."""
-        return self.model_dump(by_alias=True)
-    
-    def to_json(self) -> str:
-        """Convert TimetableData to a JSON string with camelCase keys."""
-        import orjson
-        # Use orjson for faster serialization with indentation
-        options = orjson.OPT_INDENT_2
-        # orjson dumps to bytes, so decode to utf-8 string
-        return orjson.dumps(self.to_dict(), option=options).decode('utf-8')
+    # Methods previously defined here (filter_events_*, get_events_*, sort_events_*,
+    # get_unique_*, from_dict, to_dict, to_json) were removed on 2025-04-19
+    # as they were identified as unused by Vulture and confirmed via search.
+    # They were marked with '# noqa: F811 - Part of TimetableData API' but
+    # are not currently called anywhere in the project.
+    pass # Add pass to avoid empty class body issues if no other methods exist

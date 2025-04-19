@@ -61,8 +61,6 @@ class ConcurrencyManager:
 
         self._current_limit = float(initial_limit) # Use float for multiplicative decrease
         self._success_streak = 0
-        self._error_streak = 0 # Not strictly needed for AIMD but useful for potential future logic
-        self._last_adjustment_time = time.monotonic()
         self._last_failure_time = 0.0 # Time of the last failure reduction
 
         log_message = (
@@ -89,8 +87,6 @@ class ConcurrencyManager:
             return # Do nothing if disabled
 
         self._success_streak += 1
-        self._error_streak = 0 # Reset error streak on success
-
         # Check if cooldown after failure is active
         current_time = time.monotonic()
         if current_time < self._last_failure_time + self.failure_cooldown_sec:
@@ -104,7 +100,6 @@ class ConcurrencyManager:
             if new_limit > self._current_limit:
                 old_limit_int = self.get_limit()
                 self._current_limit = new_limit
-                self._last_adjustment_time = current_time
                 logger.info(
                     f"[{self.name}] Limit increased: {old_limit_int} -> {self.get_limit()} "
                     f"(success streak: {self._success_streak})"
@@ -115,12 +110,10 @@ class ConcurrencyManager:
 
     def report_failure(self) -> None:
         """Reports a failed operation, decreasing the limit immediately if not disabled."""
-        self._error_streak += 1
         if self.disabled:
             logger.warning(f"[{self.name}] Failure reported but adjustments are disabled.")
             return # Do nothing if disabled
 
-        self._error_streak += 1
         self._success_streak = 0 # Reset success streak on failure
 
         # Decrease limit multiplicatively, but not below min_limit
@@ -130,7 +123,6 @@ class ConcurrencyManager:
             old_limit_int = self.get_limit()
             self._current_limit = new_limit
             current_time = time.monotonic()
-            self._last_adjustment_time = current_time
             self._last_failure_time = current_time # Record time of failure reduction
             logger.warning(
                 f"[{self.name}] Limit decreased: {old_limit_int} -> {self.get_limit()} "

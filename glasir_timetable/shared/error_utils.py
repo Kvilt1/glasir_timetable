@@ -4,28 +4,14 @@ Error handling utilities for the Glasir Timetable application.
 This module provides decorators, context managers, and wrapper functions
 for consistent error handling throughout the application.
 """
-import functools
 import contextlib
-import logging
-import inspect
 import traceback
-import asyncio
-from typing import Any, Callable, Dict, Optional, Type, TypeVar, Union, cast
 
-from glasir_timetable import logger, add_error, error_config
+from glasir_timetable import logger, add_error
 
-# Type definitions for better type hinting
-T = TypeVar('T')
-F = TypeVar('F', bound=Callable[..., Any])
 
 class GlasirError(Exception):
     """Base exception class for all Glasir application errors."""
-    pass
-
-class JavaScriptError(GlasirError):
-    """Exception raised for JavaScript-related errors."""
-    pass
-
 
 
 
@@ -94,7 +80,6 @@ def register_console_listener(page, listener=None):
     Returns:
         None
     """
-    global _console_listener_registry
     
     # Generate a unique ID for the page
     page_id = id(page)

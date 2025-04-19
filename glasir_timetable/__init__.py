@@ -18,11 +18,8 @@ __all__ = [
 
 __version__ = "1.1.0"
 
-import sys
 import os
 import logging
-from pathlib import Path
-from collections import defaultdict
 
 # Global error collection with configurable verbosity
 error_collection = {
@@ -52,9 +49,6 @@ raw_response_config = {
 
 # Explicitly disable raw response saving by default for performance
 raw_response_config["save_enabled"] = False
-
-# Global counter for numbering saved raw responses during a script run
-raw_response_counter = 1
 
 # Statistics tracking
 stats = {
@@ -146,7 +140,6 @@ def configure_raw_responses(save: bool, directory: str = None, save_request_deta
         directory: Directory to save raw responses to (if None, uses default)
         save_request_details: Whether to save request details along with responses
     """
-    global raw_response_config
     raw_response_config["save_enabled"] = save
     raw_response_config["save_request_details"] = save_request_details
     if directory is None:

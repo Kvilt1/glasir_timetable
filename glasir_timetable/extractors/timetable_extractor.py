@@ -1,9 +1,7 @@
 import asyncio
-import time
 from typing import Dict, List, Optional
 from cachetools import TTLCache, cached
 from glasir_timetable.api.client import AsyncApiClient
-from glasir_timetable.parsers.timetable_parser import parse_timetable_html
 from glasir_timetable.parsers.homework_parser import parse_homework_html
 from glasir_timetable.parsers.teacher_parser import parse_teacher_html
 from glasir_timetable.shared import logger
@@ -60,7 +58,7 @@ class TimetableExtractor:
                 force_max_concurrency=force_max_concurrency # Pass flag
             )
             return resp.text
-        except Exception as e:
+        except Exception:
             logger.error(f"Failed to fetch week {week_offset}")
             return ""
 
@@ -97,48 +95,3 @@ class TimetableExtractor:
 
         await asyncio.gather(*(fetch_one(lid, force_max_concurrency) for lid in lesson_ids)) # Pass flag to fetch_one
         return results
-
-    async def fetch_timetable_with_homework(
-        self,
-        week_offset: int = 0,
-        student_id: str = None,
-        lname_value: str = None,
-        timer_value: str = None,
-        student_info: Optional[Dict[str, str]] = None
-    ) -> Dict:
-        # Fetch teacher map first (assuming this doesn't need concurrency management for now)
-        teacher_map = await self.fetch_teacher_map()
-        # Note: The orchestrator should pass the week_concurrency_manager here
-        # This method might need refactoring if called outside the orchestrator context
-        # where the manager isn't available.
-        html = await self.fetch_week_html(
-            week_offset=week_offset,
-            student_id=student_id,
-            lname_value=lname_value,
-            timer_value=timer_value,
-            # week_concurrency_manager should be passed by the caller (orchestrator)
-        )
-        timetable_data, homework_ids = parse_timetable_html(html, teacher_map=teacher_map)
-        # This method is now primarily called from the orchestrator's consumer,
-        # which passes the manager. If called directly, it would need the manager.
-        # For now, assume it's called from the consumer.
-        # homework_map = await self.fetch_homework_for_lessons(homework_ids, homework_fetch_manager) # Needs manager if called here
-        # Let's remove the direct call from here as the consumer handles it.
-        # The consumer in orchestrator.py already calls fetch_homework_for_lessons with the manager.
-        # So, this fetch_timetable_with_homework method might become less relevant or needs refactoring
-        # if it's intended to be a standalone entry point.
-        # For the current task, we only need to modify fetch_homework_for_lessons itself.
-        # Let's comment out the homework fetching part within this specific method for now.
-        homework_map = {} # Placeholder - Actual fetching happens in consumer
-        logger.warning("fetch_timetable_with_homework: Homework fetching is now handled by the consumer in orchestrator.")
-
-        # homework_map = await self.fetch_homework_for_lessons(homework_ids) # Original line
-        # Merge homework into events
-        for event in timetable_data.get("events", []):
-            lesson_id = event.get("lessonId")
-            if lesson_id and lesson_id in homework_map:
-                event["description"] = homework_map[lesson_id]
-        # Overwrite studentInfo with profile data if provided
-        if student_info:
-            timetable_data["studentInfo"] = student_info
-        return timetable_data

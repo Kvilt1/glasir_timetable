@@ -43,7 +43,7 @@ def parse_args():
 
 from typing import Tuple # Add Tuple import
 
-async def select_account() -> Tuple[Optional[str], bool]:
+async def select_account() -> Tuple[Optional[str], bool]:  # noqa: F811 # Called by main.py
     """
     Interactively prompts the user to select an account profile.
 

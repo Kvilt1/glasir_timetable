@@ -1,9 +1,7 @@
-import os
 import orjson
-import shutil
 import aiofiles # Added for async file I/O
 from pathlib import Path
-from typing import Optional, Dict, List, Any, Tuple
+from typing import Optional, Dict, List, Any
 
 from ..shared.constants import (
     CONCURRENCY_CONFIG_FILENAME,
@@ -110,9 +108,6 @@ class ProfileManager:
     Handles creation, deletion, listing, and loading of profiles.
     """
     _instance: Optional['ProfileManager'] = None
-
-    # Default location relative to this file's directory parent
-    DEFAULT_ACCOUNTS_ROOT = Path(__file__).parent.parent / "accounts"
 
     def __init__(self, accounts_root: Optional[str | Path] = None):
         """
@@ -225,101 +220,3 @@ class ProfileManager:
         profile.weeks_dir.mkdir(exist_ok=True)
 
         return profile
-
-    def delete_profile(self, username: str) -> None:
-        """
-        Deletes the entire profile directory and removes it from the cache.
-
-        Args:
-            username: The username of the profile to delete.
-
-        Raises:
-            FileNotFoundError: If the profile directory doesn't exist.
-        """
-        profile_dir = self.accounts_root / username
-        if not profile_dir.is_dir():
-            raise FileNotFoundError(f"Profile '{username}' does not exist.")
-
-        try:
-            shutil.rmtree(profile_dir)
-            # TODO: Replace with proper logging
-            print(f"Deleted profile directory: {profile_dir}")
-        except OSError as e:
-            # TODO: Replace with proper logging
-            print(f"Error deleting profile directory {profile_dir}: {e}")
-            # Decide if we should re-raise or just log
-
-        # Remove from cache if present
-        if username in self._profiles_cache:
-            del self._profiles_cache[username]
-
-    def rename_profile(self, old_username: str, new_username: str) -> None:
-        """
-        Renames a profile's directory and updates the cache.
-
-        Args:
-            old_username: The current username of the profile.
-            new_username: The desired new username.
-
-        Raises:
-            FileNotFoundError: If the old profile doesn't exist.
-            FileExistsError: If the new profile name already exists.
-        """
-        old_path = self.accounts_root / old_username
-        new_path = self.accounts_root / new_username
-
-        if not old_path.is_dir():
-            raise FileNotFoundError(f"Profile '{old_username}' does not exist.")
-        if new_path.exists():
-            # Check if it's a directory; could be a file conflict too
-            if new_path.is_dir():
-                 raise FileExistsError(f"Profile '{new_username}' already exists.")
-            else:
-                 raise FileExistsError(f"A file named '{new_username}' already exists at the target location.")
-
-        try:
-            old_path.rename(new_path)
-            # TODO: Replace with proper logging
-            print(f"Renamed profile directory from {old_path} to {new_path}")
-        except OSError as e:
-            # TODO: Replace with proper logging
-            print(f"Error renaming profile directory {old_path} to {new_path}: {e}")
-            raise # Re-raise the OS error after logging
-
-        # Update cache if the old profile was loaded
-        if old_username in self._profiles_cache:
-            profile = self._profiles_cache.pop(old_username)
-            profile.username = new_username
-            profile.base_dir = new_path
-            # Update paths within the profile object
-            profile.credentials_path = profile.base_dir / "credentials.json"
-            profile.cookies_path = profile.base_dir / "cookies.json"
-            profile.student_info_path = profile.base_dir / "student-id.json"
-            profile.weeks_dir = profile.base_dir / "weeks"
-            profile.concurrency_config_path = profile.base_dir / CONCURRENCY_CONFIG_FILENAME
-            self._profiles_cache[new_username] = profile
-
-    def get_all_profiles(self) -> Dict[str, ProfileData]:
-        """
-        Loads and returns all profiles found in the accounts directory.
-
-        Returns:
-            A dictionary mapping usernames to their ProfileData instances.
-        """
-        profiles = {}
-        for username in self.list_profiles():
-            try:
-                profiles[username] = self.load_profile(username)
-            except FileNotFoundError:
-                 # Should not happen if list_profiles is accurate, but handle defensively
-                 # TODO: Replace with proper logging
-                 print(f"Warning: Profile '{username}' listed but not found during loading.")
-        return profiles
-
-    def get_profile_base_dir(self, username: str) -> Path:
-        """Returns the base directory path for a given profile username."""
-        return self.accounts_root / username
-
-    def clear_cache(self) -> None:
-        """Clears the internal profile cache."""
-        self._profiles_cache = {}

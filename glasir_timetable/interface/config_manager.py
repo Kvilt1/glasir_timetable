@@ -7,17 +7,14 @@ Configuration management for Glasir Timetable.
 - Prepares config dictionary or object for the application.
 """
 
-import os
-import logging
-from datetime import datetime
-from glasir_timetable.shared import constants  # Assuming shared.constants is still valid per file tree
+# Unused import 'constants' removed based on Vulture report and analysis.
 from glasir_timetable import configure_raw_responses
 from glasir_timetable.auth.cookies import is_cookies_valid # Removed estimate_cookie_expiration
 from glasir_timetable import logger
 from glasir_timetable.storage.profile_manager import ProfileManager, ProfileData # Import ProfileData too
 from glasir_timetable.interface.cli import prompt_for_credentials
 # (No direct import for is_full_auth_data_valid needed; logic uses profile methods)
-async def load_config(args, selected_username, profile_created: bool = False): # Add profile_created flag
+async def load_config(args, selected_username, profile_created: bool = False): # noqa: F811 - Used externally (e.g., in main.py)
     profile_manager = ProfileManager.get_instance()
     """
     Prepare and validate configuration based on CLI args and selected username.
@@ -49,7 +46,7 @@ async def load_config(args, selected_username, profile_created: bool = False): #
     # --- 2. Update Args/Defaults with Profile Paths ---
     # Args might still be used elsewhere, update them if necessary,
     # but prefer using profile paths directly from the config dict later.
-    args.cookie_path = str(profile.cookies_path) # Use profile's path
+    # args.cookie_path assignment removed; value is unused as config dict uses profile.cookies_path directly.
     args.output_dir = str(profile.weeks_dir)    # Use profile's weeks_dir for output
 
     # Ensure the output directory (weeks dir) exists

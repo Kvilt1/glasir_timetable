@@ -6,13 +6,11 @@ Orchestration logic for Glasir Timetable.
 - Calls into services and manages workflow based on config.
 """
 
-import os
 import time
-import logging
 import re
 import httpx
 import asyncio
-from asyncio import Queue, Semaphore
+from asyncio import Queue
 from bs4 import BeautifulSoup
 from tqdm.asyncio import tqdm as tqdm_asyncio
 import tqdm # Import the main tqdm module
@@ -24,7 +22,7 @@ from glasir_timetable.extractors.timetable_extractor import TimetableExtractor
 from glasir_timetable.storage.exporter import save_timetable_export # Used by consumer
 from glasir_timetable.parsers.timetable_parser import parse_timetable_html # Used by consumer
 from glasir_timetable import (
-    logger, stats, update_stats, get_error_summary, configure_raw_responses
+    logger
 )
 # Removed core.service_factory import
 from glasir_timetable.auth.cookies import load_cookies_for_profile # Import correct function
@@ -45,7 +43,7 @@ from glasir_timetable.shared.error_utils import (
     error_screenshot_context, register_console_listener
 )
 
-async def run_extraction(app):
+async def run_extraction(app): # noqa: F841  # Used externally by main.py
     args = app.args
     credentials = app.credentials
     api_only_mode = app.api_only_mode
@@ -110,27 +108,25 @@ async def run_extraction(app):
                 # timer_value = session_params.get("timer") # Removed: Timer is generated dynamically
 
                 # Initialize API client and extractor
-                api_client = AsyncApiClient(
+                async with AsyncApiClient(
                     base_url="https://tg.glasir.fo",
                     cookies=api_cookies,
                     # Always use a dynamically generated timer for consistency
                     session_params={"lname": lname_value, "timer": str(int(time.time() * 1000))}
-                )
-                extractor = TimetableExtractor(api_client)
+                ) as api_client:
+                    extractor = TimetableExtractor(api_client)
 
-                # Fetch teacher map
-                try:
-                    teacher_map = await extractor.fetch_teacher_map() # fetch_teacher_map doesn't take cookies arg
-                except Exception as e:
-                    logger.error(f"Failed to fetch teacher map: {e}")
-                    teacher_map = {}
+                    # Fetch teacher map
+                    try:
+                        teacher_map = await extractor.fetch_teacher_map() # fetch_teacher_map doesn't take cookies arg
+                    except Exception as e:
+                        logger.error(f"Failed to fetch teacher map: {e}")
+                        teacher_map = {}
 
-                # Week extraction logic - Pass the app object
-                await _extract_weeks_with_extractor(
-                    app, extractor, student_id, teacher_map, profile, credentials["username"], concurrency_config
-                )
-
-                await api_client.close()
+                    # Week extraction logic - Pass the app object
+                    await _extract_weeks_with_extractor(
+                        app, extractor, student_id, teacher_map, profile, credentials["username"], concurrency_config
+                    )
 
     else:
         # API-only mode
@@ -163,26 +159,24 @@ async def run_extraction(app):
             logger.warning(f"API-only mode: Failed to fetch/parse initial page for dynamic params: {e.__class__.__name__}: {e}")
 
         # Initialize API client and extractor
-        api_client = AsyncApiClient(
+        async with AsyncApiClient(
             base_url="https://tg.glasir.fo",
             cookies=api_cookies,
             session_params={"lname": extracted_lname, "timer": generated_timer} # Use generated timer
-        )
-        extractor = TimetableExtractor(api_client)
+        ) as api_client:
+            extractor = TimetableExtractor(api_client)
 
-        # Fetch teacher map
-        try:
-            teacher_map = await extractor.fetch_teacher_map() # fetch_teacher_map doesn't take cookies arg
-        except Exception as e:
-            logger.error(f"Failed to fetch teacher map: {e}")
-            teacher_map = {}
+            # Fetch teacher map
+            try:
+                teacher_map = await extractor.fetch_teacher_map() # fetch_teacher_map doesn't take cookies arg
+            except Exception as e:
+                logger.error(f"Failed to fetch teacher map: {e}")
+                teacher_map = {}
 
-        # Week extraction logic - Pass the app object
-        await _extract_weeks_with_extractor(
-            app, extractor, student_id, teacher_map, profile, credentials["username"], concurrency_config
-        )
-
-        await api_client.close()
+            # Week extraction logic - Pass the app object
+            await _extract_weeks_with_extractor(
+                app, extractor, student_id, teacher_map, profile, credentials["username"], concurrency_config
+            )
 
 # --- Producer-Consumer Implementation ---
 
@@ -293,12 +287,12 @@ async def _week_process_consumer(
 
                 # 5. Save the result
                 output_dir_path = profile.weeks_dir
-                save_path = await save_timetable_export(
+                await save_timetable_export(
                     timetable_data,
                     output_dir=str(output_dir_path),
                     user_id=user_id # Note: user_id is not actually used by save_timetable_export anymore
                 )
-                # tqdm.tqdm.write(f"[Consumer] Saved week {offset} data to {save_path}") # Less verbose with progress bar
+                # save_path variable removed as it was unused
                 results_counter["success"] += 1
                 progress_bar.update(1) # Update progress bar
                 await update_postfix_func() # Update postfix after successful processing

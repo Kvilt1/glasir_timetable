@@ -1,4 +1,3 @@
-import asyncio
 import re
 from typing import Optional, Dict, Any
 from playwright.async_api import Page, Error as PlaywrightError
