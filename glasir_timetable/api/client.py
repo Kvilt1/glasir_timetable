@@ -1,10 +1,14 @@
 import asyncio
+import os
+import datetime
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse, parse_qs
 
 import httpx
 from httpx import Limits
 
-from glasir_timetable.shared import logger
+# Import the global config and logger
+from glasir_timetable import raw_response_config, logger
 from glasir_timetable.shared.concurrency_manager import ConcurrencyManager
 
 
@@ -83,6 +87,8 @@ class AsyncApiClient:
                     **kwargs,
                 )
                 response.raise_for_status()
+                # Save raw response if enabled
+                await self._save_raw_response(response, method, full_url)
                 # Only report success if manager exists AND force flag is OFF
                 if concurrency_manager and not force_max_concurrency:
                     concurrency_manager.report_success()
@@ -118,6 +124,58 @@ class AsyncApiClient:
             f"API {method} {endpoint} failed after {self.max_retries} attempts"
         )
         raise last_exc
+
+    async def _save_raw_response(
+        self, response: httpx.Response, method: str, url: str
+    ):
+        """Saves the raw response content if configured."""
+        if not raw_response_config["save_enabled"]:
+            return
+
+        try:
+            # Ensure directory exists
+            save_dir = raw_response_config["directory"]
+            os.makedirs(save_dir, exist_ok=True)
+
+            # Create a somewhat unique filename
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            parsed_url = urlparse(url)
+            # Sanitize path for filename
+            path_part = parsed_url.path.strip('/').replace('/', '_')
+            if not path_part:
+                path_part = "index"
+            # Include relevant query params if they exist
+            query_part = ""
+            if parsed_url.query:
+                params = parse_qs(parsed_url.query)
+                # Example: include 'week' if present
+                if 'week' in params:
+                    query_part = f"_week{params['week'][0]}"
+                elif 'id' in params: # Or ID if relevant
+                    query_part = f"_id{params['id'][0]}"
+
+            filename = f"{timestamp}_{method}_{path_part}{query_part}.raw"
+            filepath = os.path.join(save_dir, filename)
+
+            with open(filepath, "wb") as f:
+                f.write(response.content)
+
+            logger.debug(f"Saved raw response to: {filepath}")
+
+            # Optionally save request details
+            if raw_response_config["save_request_details"]:
+                details_filepath = filepath.replace(".raw", ".request.txt")
+                with open(details_filepath, "w") as f:
+                    f.write(f"URL: {url}\n")
+                    f.write(f"Method: {method}\n")
+                    f.write(f"Status Code: {response.status_code}\n")
+                    f.write("Headers:\n")
+                    for k, v in response.request.headers.items():
+                        f.write(f"  {k}: {v}\n")
+                    # Add more details if needed (e.g., request body for POST)
+
+        except Exception as e:
+            logger.error(f"Failed to save raw response for {url}: {e}")
 
     async def get(  # Add force_max_concurrency flag
         self,

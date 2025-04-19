@@ -55,7 +55,6 @@ async def load_config(
     # --- 2. Update Args/Defaults with Profile Paths ---
     # Args might still be used elsewhere, update them if necessary,
     # but prefer using profile paths directly from the config dict later.
-    # args.cookie_path assignment removed; value is unused as config dict uses profile.cookies_path directly.
     args.output_dir = str(profile.weeks_dir)  # Use profile's weeks_dir for output
 
     # Ensure the output directory (weeks dir) exists
@@ -63,9 +62,6 @@ async def load_config(
     logger.debug(f"Ensured output directory exists: {profile.weeks_dir}")
 
     # Remove overrides of constants - paths should be accessed via profile object
-    # constants.STUDENT_ID_FILE = str(profile.student_info_path) # No longer needed
-    # import glasir_timetable.auth.cookies as cookie_auth_module # Import still needed for is_cookies_valid
-    # cookie_auth_module.DEFAULT_COOKIE_PATH = str(profile.cookies_path) # No longer needed
 
     # Removed service_factory import and config calls, assuming handled differently now
 

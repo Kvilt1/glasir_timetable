@@ -28,7 +28,6 @@ async def load_cookies_for_profile(profile: ProfileData) -> Optional[Dict[str, A
                 f"Invalid cookie data format loaded for user {profile.username}"
             )
             # Optionally delete invalid file? For now, just return None.
-            # await profile.delete_cookies_file() # Example if needed
             return None
         return cookie_data
     except Exception as e:  # Catch broader exceptions during async load or validation

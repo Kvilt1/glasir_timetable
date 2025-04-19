@@ -137,7 +137,6 @@ class ProfileManager:
             project_root = Path(__file__).parent.parent.parent
             self.accounts_root = project_root / "glasir_timetable" / "accounts"
             # Fallback if structure is different (less robust)
-            # self.accounts_root = self.DEFAULT_ACCOUNTS_ROOT
 
         self.accounts_root.mkdir(parents=True, exist_ok=True)
         self._profiles_cache: Dict[str, ProfileData] = {}  # Cache loaded profiles

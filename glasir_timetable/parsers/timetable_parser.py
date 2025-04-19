@@ -24,10 +24,10 @@ _RE_DATE_RANGE = re.compile(
     r"(\d{1,2}\.\d{1,2}\.\d{4})\s*-\s*(\d{1,2}\.\d{1,2}\.\d{4})"
 )
 _RE_DAY_DATE = re.compile(r"(\w+)\s+(\d{1,2}/\d{1,2})")
-_RE_NOTE_ONCLICK_ID = re.compile(r"'([A-F0-9-]+)&")
+# _RE_NOTE_ONCLICK_ID = re.compile(r"'([A-F0-9-]+)&") # No longer needed for lesson ID
 _RE_NOTE_IMG_SRC = re.compile(
     r"note\.gif"
-)  # Already compiled in usage, but good to have here
+)  # Still used to check for homework icon
 
 
 def get_timeslot_info(start_col_index):
@@ -67,11 +67,6 @@ def parse_timetable_html(
 
     try:
         # Pre-filtering removed - lxml handles scripts/styles/comments efficiently.
-        # html = re.sub(r'<script.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
-        # # Remove style blocks
-        # html = re.sub(r'<style.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
-        # # Remove HTML comments
-        # html = re.sub(r'<!--.*?-->', '', html, flags=re.DOTALL)
         # Now parse the potentially smaller HTML string
         soup = BeautifulSoup(html, "lxml")
 
@@ -158,7 +153,7 @@ def parse_timetable_html(
                 colspan = 1
                 try:
                     colspan = int(cell.get("colspan", 1))
-                except:
+                except ValueError:
                     pass
 
                 classes = cell.get("class", [])
@@ -209,6 +204,25 @@ def parse_timetable_html(
 
                         start_time, end_time = parse_time_range(time_info["time"])
 
+                        # --- New Lesson ID Extraction Logic ---
+                        lesson_id = None
+                        lesson_span = cell.select_one('span[id^="MyWindow"][id$="Main"]')
+                        if lesson_span and lesson_span.get("id"):
+                            span_id = lesson_span["id"]
+                            # Extract UUID: remove "MyWindow" prefix (8 chars) and "Main" suffix (4 chars)
+                            if len(span_id) > 12:  # Ensure it's long enough
+                                lesson_id = span_id[8:-4]
+                            else:
+                                logger.warning(
+                                    f"Found span with unexpected ID format: {span_id}"
+                                )
+                        else:
+                            # Log the cell content for debugging if the span is not found
+                            logger.warning(
+                                f"Could not find lesson ID span in cell: {cell.prettify()}"
+                            )
+                        # --- End New Lesson ID Extraction Logic ---
+
                         lesson = {
                             "title": subject_code,
                             "level": level,
@@ -227,26 +241,30 @@ def parse_timetable_html(
                             "endTime": end_time,
                             "timeRange": time_info["time"],
                             "cancelled": is_cancelled,
+                            "lessonId": lesson_id,  # Assign the extracted ID
+                            "hasHomeworkNote": False, # Default value
                         }
 
-                        # Check for homework icon
+                        # Check for homework icon separately to populate homework_ids
                         # Use select_one with attribute selector (contains 'note.gif')
                         note_img = cell.select_one(
                             'input[type="image"][src*="note.gif"]'
                         )
                         if note_img:
-                            onclick = note_img.get("onclick", "")
-                            m = _RE_NOTE_ONCLICK_ID.search(onclick)
-                            if m:
-                                lesson_id = m.group(1)
-                                lesson["lessonId"] = lesson_id
+                            lesson["hasHomeworkNote"] = True
+                            if lesson_id: # Only add to list if we successfully got an ID
                                 homework_ids.append(lesson_id)
+                            else:
+                                logger.warning(f"Homework note found, but no lessonId extracted for cell: {cell.prettify()}")
+
+
+                        # --- Old homework ID extraction block removed ---
 
                         timetable_data["events"].append(lesson)
 
                 current_col_index += colspan
 
     except Exception as e:
-        logger.error(f"Error parsing timetable HTML: {e}")
+        logger.error(f"Error parsing timetable HTML: {e}", exc_info=True) # Add traceback
 
     return timetable_data, homework_ids

@@ -6,47 +6,37 @@ Orchestration logic for Glasir Timetable.
 - Calls into services and manages workflow based on config.
 """
 
+# Standard Library Imports
 import asyncio
 import re
 import time
 from asyncio import Queue
+from datetime import datetime, timedelta
 
+# Third-Party Imports
 import httpx
-import tqdm  # Import the main tqdm module
+import tqdm
 from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
 from tqdm.asyncio import tqdm as tqdm_asyncio
 
-# Compiled regex patterns
-_RE_WEEK_OFFSET = re.compile(r"v=(-?\d+)")
-from playwright.async_api import async_playwright
-
+# Local Application Imports
 from glasir_timetable import logger
 from glasir_timetable.api.client import AsyncApiClient
-
-# Removed core.service_factory import
 from glasir_timetable.auth.cookies import (
     load_cookies_for_profile,
-)  # Import correct function
+    save_cookies_for_profile,
+)
 from glasir_timetable.auth.login import login as playwright_login
-
-# Removed import of non-existent extract_min_max_week_offsets
-from glasir_timetable.auth.session_params import (
-    extract_session_params_from_html,
-)  # Corrected import
+from glasir_timetable.auth.session_params import extract_session_params_from_html
 from glasir_timetable.extractors.timetable_extractor import TimetableExtractor
-from glasir_timetable.parsers.timetable_parser import (
-    parse_timetable_html,
-)  # Used by consumer
+from glasir_timetable.parsers.timetable_parser import parse_timetable_html
 from glasir_timetable.shared.concurrency_manager import ConcurrencyManager
-
-# from glasir_timetable.core.student_utils import get_student_id # Removed import
 from glasir_timetable.shared.constants import (
-    DEFAULT_WEEK_PROCESS_CONCURRENCY,
-)  # Default consumer count
-from glasir_timetable.shared.constants import (  # Import new max constants
     DEFAULT_HEADERS,
     DEFAULT_HOMEWORK_FETCH_CONCURRENCY,
     DEFAULT_WEEK_FETCH_CONCURRENCY,
+    DEFAULT_WEEK_PROCESS_CONCURRENCY,
     FORCE_MAX_HOMEWORK_FETCH_CONCURRENCY,
     FORCE_MAX_WEEK_FETCH_CONCURRENCY,
     GLASIR_TIMETABLE_URL,
@@ -55,8 +45,11 @@ from glasir_timetable.shared.error_utils import (
     error_screenshot_context,
     register_console_listener,
 )
-from glasir_timetable.storage.exporter import save_timetable_export  # Used by consumer
-from glasir_timetable.storage.profile_manager import ProfileData  # Import ProfileData
+from glasir_timetable.storage.exporter import save_timetable_export
+from glasir_timetable.storage.profile_manager import ProfileData
+
+# Compiled regex patterns
+_RE_WEEK_OFFSET = re.compile(r"v=(-?\d+)")
 
 
 async def run_extraction(app):  # noqa: F841  # Used externally by main.py
@@ -91,12 +84,8 @@ async def run_extraction(app):  # noqa: F841  # Used externally by main.py
 
                 # Save cookies to active profile for reuse
                 # We already have the 'profile' object from the app context (line 37)
-                from datetime import datetime, timedelta
+                # Imports moved to top
 
-                # from glasir_timetable.storage.profile_manager import ProfileManager # No longer needed here
-                from glasir_timetable.auth.cookies import save_cookies_for_profile
-
-                # profile = ProfileManager.get_instance().get_active_profile() # REMOVED - Use profile from app
                 if profile:
                     cookie_data = {
                         "cookies": browser_cookies,
@@ -117,7 +106,6 @@ async def run_extraction(app):  # noqa: F841  # Used externally by main.py
                 app.set_api_cookies(api_cookies)
 
                 # Student info should have been ensured during login. Retrieve it from the profile object.
-                # profile_manager = ProfileManager.get_instance() # No longer needed here
                 student_info = (
                     await profile.load_student_info()
                 )  # Load from the specific profile object
@@ -130,13 +118,11 @@ async def run_extraction(app):  # noqa: F841  # Used externally by main.py
                     )
                     # Depending on strictness, could raise an error or try a last-ditch extraction.
                     # For robustness, let's log and attempt to continue, but this needs review.
-                    # raise ValueError("Student ID could not be determined after login.")
 
                 # Extract session parameters regardless of student ID status for now
                 content = await page.content()
                 session_params = extract_session_params_from_html(content)
                 lname_value = session_params.get("lname")
-                # timer_value = session_params.get("timer") # Removed: Timer is generated dynamically
 
                 # Initialize API client and extractor
                 async with AsyncApiClient(
@@ -191,7 +177,6 @@ async def run_extraction(app):  # noqa: F841  # Used externally by main.py
 
         # Fetch dynamic params
         extracted_lname = None
-        # extracted_timer = None # Removed: Timer is generated dynamically later
         try:
             async with httpx.AsyncClient(
                 cookies=api_cookies, headers=DEFAULT_HEADERS, follow_redirects=True
@@ -265,7 +250,6 @@ async def _week_fetch_producer(  # Add force_max_concurrency flag
         try:
             offset = await fetch_queue.get()
             if offset is None:  # Sentinel value indicates completion
-                # logger.debug("Producer received sentinel, exiting.")
                 fetch_queue.task_done()
                 break
 
@@ -330,13 +314,10 @@ async def _week_process_consumer(
         try:
             item = await process_queue.get()
             if item is None:  # Sentinel value indicates completion
-                # logger.debug("Consumer received sentinel, exiting.")
                 process_queue.task_done()
                 break
 
             offset, html_content = item
-            # Optional: async with process_semaphore:
-            # tqdm.tqdm.write(f"[Consumer] Processing week offset {offset}") # Less verbose with progress bar
             try:
                 # 1. Parse main timetable HTML
                 timetable_data, homework_ids = parse_timetable_html(
@@ -564,7 +545,6 @@ async def _extract_weeks_with_extractor(
         fetch_semaphore = asyncio.Semaphore(
             week_fetch_manager.get_limit()
         )  # Use initial limit from manager
-        # process_semaphore = asyncio.Semaphore(MAX_CONCURRENT_WEEK_PROCESSES) # Optional processing semaphore
         results_counter = {"success": 0, "failure": 0}
 
         # Populate fetch queue
@@ -590,7 +570,6 @@ async def _extract_weeks_with_extractor(
         producer_tasks = []
         # Use the manager's initial limit to determine the number of producer tasks
         num_producers = week_fetch_manager.get_limit()
-        # tqdm_write(f"Creating {num_producers} producer tasks based on initial week_fetch_limit.") # Less verbose
         for _ in range(num_producers):
             task = asyncio.create_task(
                 _week_fetch_producer(
@@ -614,7 +593,6 @@ async def _extract_weeks_with_extractor(
         num_consumers = concurrency_config.get(
             "week_process_limit", DEFAULT_WEEK_PROCESS_CONCURRENCY
         )
-        # tqdm_write(f"Creating {num_consumers} consumer tasks.") # Less verbose
         for _ in range(num_consumers):
             task = asyncio.create_task(
                 _week_process_consumer(
@@ -664,7 +642,6 @@ async def _extract_weeks_with_extractor(
         tqdm.tqdm.write("All consumer tasks finished.")
 
         # Final summary outside tqdm context might be cleaner
-        # logger.info(f"Week processing complete. Success: {results_counter['success']}, Failures: {results_counter['failure']}")
 
     finally:
         if progress_bar:

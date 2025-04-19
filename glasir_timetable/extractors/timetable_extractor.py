@@ -79,7 +79,6 @@ class TimetableExtractor:
         results = {}
 
         async def fetch_one(lesson_id, force_flag):  # Accept flag
-            # async with sem: # Removed
             try:
                 data = {
                     "fname": "Henry",

@@ -9,7 +9,7 @@ CLI parsing and interactive prompts for Glasir Timetable.
 import argparse
 import getpass
 import sys
-from typing import Optional
+from typing import Optional, Tuple
 
 from glasir_timetable.storage.profile_manager import ProfileManager
 
@@ -135,9 +135,6 @@ def parse_args():
     )
     args = parser.parse_args()
     return args
-
-
-from typing import Tuple  # Add Tuple import
 
 
 async def select_account() -> (

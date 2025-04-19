@@ -16,7 +16,6 @@ SLASH_DATE_SHORT = re.compile(r"(\d{1,2})/(\d{1,2})")
 SLASH_DATE_WITH_YEAR = re.compile(r"(\d{1,2})/(\d{1,2})-(\d{4})")
 
 
-# def detect_date_format(date_str): # Removed as unused
 #     """
 #     Detect the format of a date string.
 #     ... (rest of docstring and code) ...
@@ -138,13 +137,11 @@ def convert_date_format(
     return None
 
 
-# def is_valid_date(date_str): # Removed as unused
 #     """
 #     Check if a string is a valid date in any of the supported formats.
 #     ... (rest of docstring and code) ...
 #     """
 #     pass # Function removed
-# def get_filename_date_format(start_date_str, end_date_str, year=None): # Removed as unused
 #     """
 #     Format dates specifically for the timetable filename format.
 #     ... (rest of docstring and code) ...

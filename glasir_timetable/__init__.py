@@ -163,11 +163,6 @@ def configure_raw_responses(
 
         os.makedirs(directory, exist_ok=True)
         logger.info(f"Raw responses will be saved to: {directory}")
-        import os
-
-        os.makedirs(raw_response_config["directory"], exist_ok=True)
-        logger.info(
-            f"Raw responses will be saved to: {raw_response_config['directory']}"
-        )
+        logger.info(f"Raw response saving enabled. Directory: {directory}")
     else:
-        logger.info("Raw response saving is disabled")
+        logger.info("Raw response saving is disabled.")

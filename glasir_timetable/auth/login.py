@@ -197,9 +197,6 @@ async def login(
     except PlaywrightError as e:
         logger.error(f"Playwright error during login: {e}")
         # Consider saving page source/screenshot for debugging
-        # await page.screenshot(path="login_error_screenshot.png")
-        # html = await page.content()
-        # with open("login_error_page.html", "w") as f: f.write(html)
         raise
     except Exception as e:
         logger.error(f"Login failed: {e}")
