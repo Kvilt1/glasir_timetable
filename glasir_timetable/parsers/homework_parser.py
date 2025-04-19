@@ -1,15 +1,17 @@
 import logging
-from bs4 import BeautifulSoup, Tag
-from typing import Dict
 import re
+from typing import Dict
+
+from bs4 import BeautifulSoup, Tag
 
 # Compiled regex patterns for performance
-_RE_SPACE_BEFORE_NEWLINE = re.compile(r' +\n')
-_RE_SPACE_AFTER_NEWLINE = re.compile(r'\n +')
+_RE_SPACE_BEFORE_NEWLINE = re.compile(r" +\n")
+_RE_SPACE_AFTER_NEWLINE = re.compile(r"\n +")
 # _RE_MULTIPLE_NEWLINES = re.compile(r'\n{3,}') # Keep original newlines for now
 
 # Assuming logger is configured elsewhere, e.g., in shared/__init__.py
 logger = logging.getLogger(__name__)
+
 
 def parse_homework_html(html: str) -> Dict[str, str]:
     """
@@ -27,33 +29,41 @@ def parse_homework_html(html: str) -> Dict[str, str]:
         soup = BeautifulSoup(html, "lxml")
 
         # 1. Find the hidden input field for LektionsID and extract lesson_id
-        lesson_id_input = soup.select_one('input[type="hidden"][id^="LektionsID"]') # Use CSS selector
+        lesson_id_input = soup.select_one(
+            'input[type="hidden"][id^="LektionsID"]'
+        )  # Use CSS selector
         if not lesson_id_input:
             logger.warning("Could not find LektionsID input field in homework HTML.")
             return result
-        
-        lesson_id = lesson_id_input.get('value')
+
+        lesson_id = lesson_id_input.get("value")
         if not lesson_id:
             logger.warning("LektionsID input field found, but has no value.")
             return result
 
         # 2. Find the <p> tag containing the homework text
         # We locate it by finding the 'Heimaarbeiði' bold tag first
-        homework_header = soup.find('b', string='Heimaarbeiði')
+        homework_header = soup.find("b", string="Heimaarbeiði")
         if not homework_header:
             # It might be that there's no homework, which isn't necessarily an error
-            logger.info(f"No 'Heimaarbeiði' header found for lesson {lesson_id}. Assuming no homework.")
-            return result # Return empty dict as no homework text found
+            logger.info(
+                f"No 'Heimaarbeiði' header found for lesson {lesson_id}. Assuming no homework."
+            )
+            return result  # Return empty dict as no homework text found
 
-        homework_p = homework_header.find_parent('p')
+        homework_p = homework_header.find_parent("p")
         if not homework_p:
-            logger.warning(f"Found 'Heimaarbeiði' header but could not find its parent <p> tag for lesson {lesson_id}.")
+            logger.warning(
+                f"Found 'Heimaarbeiði' header but could not find its parent <p> tag for lesson {lesson_id}."
+            )
             return result
 
         # 3. Extract text, converting <br> to \n, <b> to **bold**, <i> to *italic*,
         #    removing header and cleaning whitespace, and preserving literal \n in text nodes.
 
-        def process_node(node, is_first_level=False, header_skipped=False, first_br_skipped=False):
+        def process_node(
+            node, is_first_level=False, header_skipped=False, first_br_skipped=False
+        ):
             """
             Recursively process a BeautifulSoup node, converting tags to markdown and preserving literal newlines.
             Handles skipping the 'Heimaarbeiði' header and the first <br> after it.
@@ -64,48 +74,79 @@ def parse_homework_html(html: str) -> Dict[str, str]:
                 parts.append(node)
             elif isinstance(node, Tag):
                 # Skip the header <b>Heimaarbeiði</b>
-                if is_first_level and not header_skipped and node.name == 'b' and node.get_text(strip=True) == 'Heimaarbeiði':
-                    return [], True, first_br_skipped # Skip header, mark as skipped
+                if (
+                    is_first_level
+                    and not header_skipped
+                    and node.name == "b"
+                    and node.get_text(strip=True) == "Heimaarbeiði"
+                ):
+                    return [], True, first_br_skipped  # Skip header, mark as skipped
 
                 # Skip the first <br> immediately after the header
-                if is_first_level and header_skipped and not first_br_skipped and node.name == 'br':
-                    return [], header_skipped, True # Skip first br, mark as skipped
+                if (
+                    is_first_level
+                    and header_skipped
+                    and not first_br_skipped
+                    and node.name == "br"
+                ):
+                    return [], header_skipped, True  # Skip first br, mark as skipped
 
-                if node.name == 'br':
-                    parts.append('\n')
-                elif node.name == 'b':
+                if node.name == "br":
+                    parts.append("\n")
+                elif node.name == "b":
                     # Convert <b>...</b> to **...**
                     inner_parts = []
                     current_header_skipped = header_skipped
                     current_first_br_skipped = first_br_skipped
                     for child in node.children:
-                        child_parts, current_header_skipped, current_first_br_skipped = process_node(
-                            child, False, current_header_skipped, current_first_br_skipped
+                        (
+                            child_parts,
+                            current_header_skipped,
+                            current_first_br_skipped,
+                        ) = process_node(
+                            child,
+                            False,
+                            current_header_skipped,
+                            current_first_br_skipped,
                         )
                         inner_parts.extend(child_parts)
-                    inner = ''.join(inner_parts)
-                    if inner.strip(): # Only add if bold tag contains non-whitespace
+                    inner = "".join(inner_parts)
+                    if inner.strip():  # Only add if bold tag contains non-whitespace
                         parts.append(f"**{inner.strip()}**")
-                elif node.name == 'i':
+                elif node.name == "i":
                     # Convert <i>...</i> to *...*
                     inner_parts = []
                     current_header_skipped = header_skipped
                     current_first_br_skipped = first_br_skipped
                     for child in node.children:
-                         child_parts, current_header_skipped, current_first_br_skipped = process_node(
-                            child, False, current_header_skipped, current_first_br_skipped
+                        (
+                            child_parts,
+                            current_header_skipped,
+                            current_first_br_skipped,
+                        ) = process_node(
+                            child,
+                            False,
+                            current_header_skipped,
+                            current_first_br_skipped,
                         )
-                         inner_parts.extend(child_parts)
-                    inner = ''.join(inner_parts)
-                    if inner.strip(): # Only add if italic tag contains non-whitespace
+                        inner_parts.extend(child_parts)
+                    inner = "".join(inner_parts)
+                    if inner.strip():  # Only add if italic tag contains non-whitespace
                         parts.append(f"*{inner.strip()}*")
                 else:
                     # Recursively process children of other tags
                     current_header_skipped = header_skipped
                     current_first_br_skipped = first_br_skipped
                     for child in node.children:
-                        child_parts, current_header_skipped, current_first_br_skipped = process_node(
-                            child, False, current_header_skipped, current_first_br_skipped
+                        (
+                            child_parts,
+                            current_header_skipped,
+                            current_first_br_skipped,
+                        ) = process_node(
+                            child,
+                            False,
+                            current_header_skipped,
+                            current_first_br_skipped,
                         )
                         parts.extend(child_parts)
 
@@ -116,8 +157,10 @@ def parse_homework_html(html: str) -> Dict[str, str]:
         final_header_skipped = False
         final_first_br_skipped = False
         for element in homework_p.contents:
-            processed_parts, final_header_skipped, final_first_br_skipped = process_node(
-                element, True, final_header_skipped, final_first_br_skipped
+            processed_parts, final_header_skipped, final_first_br_skipped = (
+                process_node(
+                    element, True, final_header_skipped, final_first_br_skipped
+                )
             )
             markdown_parts.extend(processed_parts)
 
@@ -126,8 +169,8 @@ def parse_homework_html(html: str) -> Dict[str, str]:
 
         # Clean up whitespace:
         # 1. Remove spaces immediately surrounding newlines
-        homework_text = _RE_SPACE_BEFORE_NEWLINE.sub('\n', homework_text)
-        homework_text = _RE_SPACE_AFTER_NEWLINE.sub('\n', homework_text)
+        homework_text = _RE_SPACE_BEFORE_NEWLINE.sub("\n", homework_text)
+        homework_text = _RE_SPACE_AFTER_NEWLINE.sub("\n", homework_text)
         # 2. Consolidate multiple newlines into max two (like paragraphs) - Keep single newlines as they are
         # homework_text = re.sub(r'\n{3,}', '\n\n', homework_text) # Keep original newlines
         # 3. Strip leading/trailing whitespace/newlines from the final string
@@ -137,8 +180,9 @@ def parse_homework_html(html: str) -> Dict[str, str]:
         if homework_text:
             result[lesson_id] = homework_text
         else:
-             logger.info(f"Found 'Heimaarbeiði' structure but no subsequent text for lesson {lesson_id}.")
-
+            logger.info(
+                f"Found 'Heimaarbeiði' structure but no subsequent text for lesson {lesson_id}."
+            )
 
     except Exception as e:
         # 5. Robust error handling and logging

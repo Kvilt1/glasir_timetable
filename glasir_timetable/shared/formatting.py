@@ -4,6 +4,7 @@ Utility functions for formatting and date handling.
 """
 from functools import lru_cache
 
+
 @lru_cache()
 def format_academic_year(year_code):
     """

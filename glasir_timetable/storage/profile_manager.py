@@ -1,22 +1,25 @@
-import orjson
-import aiofiles # Added for async file I/O
 from pathlib import Path
-from typing import Optional, Dict, List, Any
+from typing import Any, Dict, List, Optional
 
+import aiofiles  # Added for async file I/O
+import orjson
+
+from ..shared.constants import DEFAULT_HOMEWORK_FETCH_CONCURRENCY  # Corrected name
+from ..shared.constants import DEFAULT_WEEK_FETCH_CONCURRENCY  # Corrected name
 from ..shared.constants import (
-    CONCURRENCY_CONFIG_FILENAME,
-    DEFAULT_WEEK_FETCH_CONCURRENCY, # Corrected name
-    DEFAULT_HOMEWORK_FETCH_CONCURRENCY, # Corrected name
-    DEFAULT_WEEK_PROCESS_CONCURRENCY, # Added default for processing
-)
+    DEFAULT_WEEK_PROCESS_CONCURRENCY,
+)  # Added default for processing
+from ..shared.constants import CONCURRENCY_CONFIG_FILENAME
 
 # Assuming AccountProfile will be moved here or its definition adjusted
 # For now, let's define a minimal structure or import from the old location
 # We will remove the old accounts directory later.
 # Let's define the structure needed directly for now.
 
+
 class ProfileData:
     """Represents the data structure and paths for a single profile."""
+
     def __init__(self, username: str, base_dir: Path):
         self.username = username
         self.base_dir = base_dir
@@ -25,7 +28,9 @@ class ProfileData:
         self.credentials_path = self.base_dir / "credentials.json"
         self.cookies_path = self.base_dir / "cookies.json"
         self.student_info_path = self.base_dir / "student-id.json"
-        self.weeks_dir = self.base_dir / "weeks"  # Assuming timetable data is stored here
+        self.weeks_dir = (
+            self.base_dir / "weeks"
+        )  # Assuming timetable data is stored here
         self.concurrency_config_path = self.base_dir / CONCURRENCY_CONFIG_FILENAME
 
     async def _load_json(self, path: Path) -> Optional[Dict[str, Any]]:
@@ -43,11 +48,11 @@ class ProfileData:
 
     async def _save_json(self, path: Path, data: Dict[str, Any]) -> None:
         try:
-            self.base_dir.mkdir(parents=True, exist_ok=True) # Ensure dir exists
+            self.base_dir.mkdir(parents=True, exist_ok=True)  # Ensure dir exists
             async with aiofiles.open(path, "w", encoding="utf-8") as f:
                 # Use orjson for faster serialization with indentation and newline
                 options = orjson.OPT_INDENT_2 | orjson.OPT_APPEND_NEWLINE
-                await f.write(orjson.dumps(data, option=options).decode('utf-8'))
+                await f.write(orjson.dumps(data, option=options).decode("utf-8"))
         except IOError as e:
             # TODO: Replace with proper logging
             print(f"Error saving JSON to {path}: {e}")
@@ -82,16 +87,22 @@ class ProfileData:
         if config_data is None:
             # Return defaults if file not found or error during load
             return {
-                "week_fetch_limit": DEFAULT_WEEK_FETCH_CONCURRENCY, # Corrected name
-                "homework_fetch_limit": DEFAULT_HOMEWORK_FETCH_CONCURRENCY, # Corrected name
-                "week_process_limit": DEFAULT_WEEK_PROCESS_CONCURRENCY, # Added default
+                "week_fetch_limit": DEFAULT_WEEK_FETCH_CONCURRENCY,  # Corrected name
+                "homework_fetch_limit": DEFAULT_HOMEWORK_FETCH_CONCURRENCY,  # Corrected name
+                "week_process_limit": DEFAULT_WEEK_PROCESS_CONCURRENCY,  # Added default
             }
         # Validate or provide defaults for missing keys? For now, assume structure or defaults.
         # Let's ensure the keys exist, falling back to defaults if necessary.
         return {
-            "week_fetch_limit": config_data.get("week_fetch_limit", DEFAULT_WEEK_FETCH_CONCURRENCY), # Corrected name
-            "homework_fetch_limit": config_data.get("homework_fetch_limit", DEFAULT_HOMEWORK_FETCH_CONCURRENCY), # Corrected name
-            "week_process_limit": config_data.get("week_process_limit", DEFAULT_WEEK_PROCESS_CONCURRENCY), # Added loading with default
+            "week_fetch_limit": config_data.get(
+                "week_fetch_limit", DEFAULT_WEEK_FETCH_CONCURRENCY
+            ),  # Corrected name
+            "homework_fetch_limit": config_data.get(
+                "homework_fetch_limit", DEFAULT_HOMEWORK_FETCH_CONCURRENCY
+            ),  # Corrected name
+            "week_process_limit": config_data.get(
+                "week_process_limit", DEFAULT_WEEK_PROCESS_CONCURRENCY
+            ),  # Added loading with default
         }
 
     async def save_concurrency_config(self, config_data: Dict[str, int]) -> None:
@@ -107,7 +118,8 @@ class ProfileManager:
     Manages user profile storage and retrieval.
     Handles creation, deletion, listing, and loading of profiles.
     """
-    _instance: Optional['ProfileManager'] = None
+
+    _instance: Optional["ProfileManager"] = None
 
     def __init__(self, accounts_root: Optional[str | Path] = None):
         """
@@ -128,28 +140,36 @@ class ProfileManager:
             # self.accounts_root = self.DEFAULT_ACCOUNTS_ROOT
 
         self.accounts_root.mkdir(parents=True, exist_ok=True)
-        self._profiles_cache: Dict[str, ProfileData] = {} # Cache loaded profiles
+        self._profiles_cache: Dict[str, ProfileData] = {}  # Cache loaded profiles
 
     @classmethod
-    def get_instance(cls, accounts_root: Optional[str | Path] = None) -> 'ProfileManager':
+    def get_instance(
+        cls, accounts_root: Optional[str | Path] = None
+    ) -> "ProfileManager":
         """Gets the singleton instance, initializing if necessary."""
         if cls._instance is None:
             cls._instance = ProfileManager(accounts_root=accounts_root)
-        elif accounts_root is not None and cls._instance.accounts_root != Path(accounts_root):
+        elif accounts_root is not None and cls._instance.accounts_root != Path(
+            accounts_root
+        ):
             # If called again with a different root, re-initialize (or raise error)
             # This handles cases like testing where a different root might be needed
             # TODO: Consider if this re-initialization is the desired behavior for a singleton
-            print(f"Warning: Re-initializing ProfileManager singleton with new root: {accounts_root}")
+            print(
+                f"Warning: Re-initializing ProfileManager singleton with new root: {accounts_root}"
+            )
             cls._instance = ProfileManager(accounts_root=accounts_root)
         return cls._instance
 
     def list_profiles(self) -> List[str]:
         """Lists the usernames of all available profiles."""
         return [
-            d.name for d in self.accounts_root.iterdir()
+            d.name
+            for d in self.accounts_root.iterdir()
             if d.is_dir()
-            and not d.name.startswith('.')
-            and d.name not in ("global", "__pycache__") # Exclude common non-profile dirs
+            and not d.name.startswith(".")
+            and d.name
+            not in ("global", "__pycache__")  # Exclude common non-profile dirs
         ]
 
     def profile_exists(self, username: str) -> bool:
@@ -172,7 +192,9 @@ class ProfileManager:
             FileNotFoundError: If the profile directory doesn't exist.
         """
         if not self.profile_exists(username):
-             raise FileNotFoundError(f"Profile directory not found for username: {username}")
+            raise FileNotFoundError(
+                f"Profile directory not found for username: {username}"
+            )
 
         if username in self._profiles_cache:
             return self._profiles_cache[username]
@@ -182,7 +204,9 @@ class ProfileManager:
         self._profiles_cache[username] = profile
         return profile
 
-    async def create_profile(self, username: str, credentials: Optional[Dict] = None) -> ProfileData:
+    async def create_profile(
+        self, username: str, credentials: Optional[Dict] = None
+    ) -> ProfileData:
         """
         Creates a new profile directory and initializes basic files.
 
@@ -197,7 +221,7 @@ class ProfileManager:
             The created or loaded ProfileData instance.
         """
         profile_dir = self.accounts_root / username
-        profile_dir.mkdir(parents=True, exist_ok=True) # Ensure directory exists
+        profile_dir.mkdir(parents=True, exist_ok=True)  # Ensure directory exists
 
         # Use load_profile to potentially get from cache or create ProfileData instance
         # Need to handle case where load_profile raises FileNotFoundError if dir *just* created
@@ -214,7 +238,7 @@ class ProfileManager:
 
         # Initialize student info if missing (create empty file)
         if not profile.student_info_path.exists():
-            await profile.save_student_info({}) # Save empty dict
+            await profile.save_student_info({})  # Save empty dict
 
         # Ensure weeks directory exists
         profile.weeks_dir.mkdir(exist_ok=True)

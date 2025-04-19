@@ -11,19 +11,19 @@ DAY_NAME_MAPPING = {
     "Hósdagur": "Thursday",
     "Fríggjadagur": "Friday",
     "Leygardagur": "Saturday",
-    "Sunnudagur": "Sunday"
+    "Sunnudagur": "Sunday",
 }
 
 # CSS classes that indicate a cancelled class (all use text-decoration:line-through)
 CANCELLED_CLASS_INDICATORS = [
-    'lektionslinje_lesson1',
-    'lektionslinje_lesson2',
-    'lektionslinje_lesson3',
-    'lektionslinje_lesson4',
-    'lektionslinje_lesson5',
-    'lektionslinje_lesson7',
-    'lektionslinje_lesson10',
-    'lektionslinje_lessoncancelled'
+    "lektionslinje_lesson1",
+    "lektionslinje_lesson2",
+    "lektionslinje_lesson3",
+    "lektionslinje_lesson4",
+    "lektionslinje_lesson5",
+    "lektionslinje_lesson7",
+    "lektionslinje_lesson10",
+    "lektionslinje_lessoncancelled",
 ]
 
 # URLs
@@ -43,9 +43,13 @@ TEACHER_MAP_CACHE_TTL = 86400  # 24 hours in seconds
 # --- Concurrency Settings ---
 
 # Default limits (used when no dynamic config exists or dynamic fails)
-DEFAULT_WEEK_FETCH_CONCURRENCY = 5   # Default parallel week HTML fetch requests (Producer)
+DEFAULT_WEEK_FETCH_CONCURRENCY = (
+    5  # Default parallel week HTML fetch requests (Producer)
+)
 DEFAULT_HOMEWORK_FETCH_CONCURRENCY = 20  # Default parallel homework detail requests
-DEFAULT_WEEK_PROCESS_CONCURRENCY = 4 # Default parallel week data processing tasks (Consumer) - Adjust based on CPU/IO
+DEFAULT_WEEK_PROCESS_CONCURRENCY = (
+    4  # Default parallel week data processing tasks (Consumer) - Adjust based on CPU/IO
+)
 
 # Maximum limits (used for --force-max-concurrency flag)
 # These represent reasonable upper bounds to avoid overwhelming the server.

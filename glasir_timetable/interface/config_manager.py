@@ -1,4 +1,3 @@
-
 """
 Configuration management for Glasir Timetable.
 
@@ -8,13 +7,21 @@ Configuration management for Glasir Timetable.
 """
 
 # Unused import 'constants' removed based on Vulture report and analysis.
-from glasir_timetable import configure_raw_responses
-from glasir_timetable.auth.cookies import is_cookies_valid # Removed estimate_cookie_expiration
-from glasir_timetable import logger
-from glasir_timetable.storage.profile_manager import ProfileManager, ProfileData # Import ProfileData too
+from glasir_timetable import configure_raw_responses, logger
+from glasir_timetable.auth.cookies import (
+    is_cookies_valid,
+)  # Removed estimate_cookie_expiration
 from glasir_timetable.interface.cli import prompt_for_credentials
+from glasir_timetable.storage.profile_manager import (  # Import ProfileData too
+    ProfileData,
+    ProfileManager,
+)
+
+
 # (No direct import for is_full_auth_data_valid needed; logic uses profile methods)
-async def load_config(args, selected_username, profile_created: bool = False): # noqa: F811 - Used externally (e.g., in main.py)
+async def load_config(
+    args, selected_username, profile_created: bool = False
+):  # noqa: F811 - Used externally (e.g., in main.py)
     profile_manager = ProfileManager.get_instance()
     """
     Prepare and validate configuration based on CLI args and selected username.
@@ -30,7 +37,9 @@ async def load_config(args, selected_username, profile_created: bool = False): #
         profile: ProfileData = profile_manager.load_profile(selected_username)
         logger.info(f"Loaded profile for '{selected_username}' from {profile.base_dir}")
     except FileNotFoundError:
-        logger.error(f"Profile '{selected_username}' not found. Please ensure the profile exists.")
+        logger.error(
+            f"Profile '{selected_username}' not found. Please ensure the profile exists."
+        )
         # Optionally, prompt to create one or exit
         # For now, let's exit as config is crucial
         # TODO: Consider prompting for creation via ProfileManager.create_profile
@@ -47,7 +56,7 @@ async def load_config(args, selected_username, profile_created: bool = False): #
     # Args might still be used elsewhere, update them if necessary,
     # but prefer using profile paths directly from the config dict later.
     # args.cookie_path assignment removed; value is unused as config dict uses profile.cookies_path directly.
-    args.output_dir = str(profile.weeks_dir)    # Use profile's weeks_dir for output
+    args.output_dir = str(profile.weeks_dir)  # Use profile's weeks_dir for output
 
     # Ensure the output directory (weeks dir) exists
     profile.weeks_dir.mkdir(parents=True, exist_ok=True)
@@ -65,21 +74,27 @@ async def load_config(args, selected_username, profile_created: bool = False): #
     configure_raw_responses(
         args.save_raw_responses,
         args.raw_responses_dir,
-        save_request_details=args.save_raw_responses
+        save_request_details=args.save_raw_responses,
     )
 
     # --- 3. Handle Credentials ---
     # Profile loading already handled above
     credentials = await profile.load_credentials()
     # Only prompt for credentials if the profile wasn't *just* created AND they are missing/invalid
-    if not profile_created and (not credentials or "username" not in credentials or "password" not in credentials):
+    if not profile_created and (
+        not credentials
+        or "username" not in credentials
+        or "password" not in credentials
+    ):
         logger.warning("Credentials file missing or incomplete. Prompting user.")
         credentials = prompt_for_credentials(selected_username)
         await profile.save_credentials(credentials)
     elif not credentials:
         # This case should ideally not happen if profile_created is True,
         # as cli.py should have saved them. Log a warning if it does.
-        logger.error("Profile was just created, but credentials could not be loaded. This indicates an issue.")
+        logger.error(
+            "Profile was just created, but credentials could not be loaded. This indicates an issue."
+        )
         # Attempt to prompt anyway as a fallback, though this might indicate a deeper problem.
         credentials = prompt_for_credentials(selected_username)
         await profile.save_credentials(credentials)
@@ -95,36 +110,42 @@ async def load_config(args, selected_username, profile_created: bool = False): #
 
         if cookies_are_valid and student_info_is_valid:
             auth_valid = True
-            cached_student_info = student_info # Store loaded info
+            cached_student_info = student_info  # Store loaded info
             api_only_mode = True
-            logger.info("Valid cookies and student info found. Automatically enabling API-only mode (skipping Playwright).")
+            logger.info(
+                "Valid cookies and student info found. Automatically enabling API-only mode (skipping Playwright)."
+            )
         elif not cookies_are_valid:
-             logger.info("Cookies missing or expired.")
+            logger.info("Cookies missing or expired.")
         elif not student_info_is_valid:
-             logger.info("Student info missing or invalid.")
+            logger.info("Student info missing or invalid.")
 
         if not auth_valid:
-             logger.info("Full auth data not available or valid. API-only mode disabled. Playwright login may be required.")
+            logger.info(
+                "Full auth data not available or valid. API-only mode disabled. Playwright login may be required."
+            )
 
     except Exception as e:
         logger.error(f"Error checking auth data validity: {e}")
         # Decide how to handle error, e.g., default to non-API mode
-        logger.warning("Proceeding with API-only mode disabled due to error checking auth data.")
+        logger.warning(
+            "Proceeding with API-only mode disabled due to error checking auth data."
+        )
 
     # --- 5. Prepare Config Dict ---
     config = {
-        "args": args, # Pass original args for reference if needed elsewhere
+        "args": args,  # Pass original args for reference if needed elsewhere
         "username": selected_username,
-        "profile": profile, # Pass the loaded ProfileData object
-        "account_path": str(profile.base_dir), # Use profile path
-        "cookie_path": str(profile.cookies_path), # Use profile path
-        "output_dir": str(profile.weeks_dir), # Use profile path (weeks dir)
-        "student_id_path": str(profile.student_info_path), # Use profile path
+        "profile": profile,  # Pass the loaded ProfileData object
+        "account_path": str(profile.base_dir),  # Use profile path
+        "cookie_path": str(profile.cookies_path),  # Use profile path
+        "output_dir": str(profile.weeks_dir),  # Use profile path (weeks dir)
+        "student_id_path": str(profile.student_info_path),  # Use profile path
         "credentials": credentials,
         "api_only_mode": api_only_mode,
         "cached_student_info": cached_student_info,
-        "concurrency_config": concurrency_config, # Add loaded concurrency settings
-        "force_max_concurrency": args.force_max_concurrency, # Add the new flag
+        "concurrency_config": concurrency_config,  # Add loaded concurrency settings
+        "force_max_concurrency": args.force_max_concurrency,  # Add the new flag
         # Add other relevant config derived from args or profile as needed
     }
 

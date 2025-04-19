@@ -5,6 +5,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
 class ConcurrencyManager:
     """
     Manages dynamic concurrency limits based on success/failure feedback.
@@ -21,9 +22,9 @@ class ConcurrencyManager:
         increase_step: int = 1,
         decrease_factor: float = 0.5,
         success_threshold: int = 10,  # Adjust limit after this many successes
-        failure_cooldown_sec: float = 5.0, # Cooldown after a failure reduction
+        failure_cooldown_sec: float = 5.0,  # Cooldown after a failure reduction
         name: Optional[str] = None,
-        disabled: bool = False, # Add disabled flag
+        disabled: bool = False,  # Add disabled flag
     ):
         """
         Initializes the ConcurrencyManager.
@@ -40,7 +41,9 @@ class ConcurrencyManager:
             disabled: If True, dynamic adjustments are disabled.
         """
         if not (0 < min_limit <= initial_limit <= max_limit):
-            raise ValueError("Concurrency limits invalid: min <= initial <= max must hold.")
+            raise ValueError(
+                "Concurrency limits invalid: min <= initial <= max must hold."
+            )
         if not (0 < decrease_factor < 1):
             raise ValueError("Decrease factor must be between 0 and 1.")
         if increase_step <= 0:
@@ -48,7 +51,7 @@ class ConcurrencyManager:
         if success_threshold <= 0:
             raise ValueError("Success threshold must be positive.")
         if failure_cooldown_sec < 0:
-             raise ValueError("Failure cooldown cannot be negative.")
+            raise ValueError("Failure cooldown cannot be negative.")
 
         self.min_limit = min_limit
         self.max_limit = max_limit
@@ -57,11 +60,13 @@ class ConcurrencyManager:
         self.success_threshold = success_threshold
         self.failure_cooldown_sec = failure_cooldown_sec
         self.name = name or "ConcurrencyManager"
-        self.disabled = disabled # Store the disabled state
+        self.disabled = disabled  # Store the disabled state
 
-        self._current_limit = float(initial_limit) # Use float for multiplicative decrease
+        self._current_limit = float(
+            initial_limit
+        )  # Use float for multiplicative decrease
         self._success_streak = 0
-        self._last_failure_time = 0.0 # Time of the last failure reduction
+        self._last_failure_time = 0.0  # Time of the last failure reduction
 
         log_message = (
             f"[{self.name}] Initialized: initial={initial_limit}, min={min_limit}, "
@@ -84,7 +89,7 @@ class ConcurrencyManager:
         """Reports a successful operation, potentially increasing the limit if not disabled."""
         self._success_streak += 1
         if self.disabled:
-            return # Do nothing if disabled
+            return  # Do nothing if disabled
 
         self._success_streak += 1
         # Check if cooldown after failure is active
@@ -107,14 +112,15 @@ class ConcurrencyManager:
             # Reset streak after adjustment or hitting max limit
             self._success_streak = 0
 
-
     def report_failure(self) -> None:
         """Reports a failed operation, decreasing the limit immediately if not disabled."""
         if self.disabled:
-            logger.warning(f"[{self.name}] Failure reported but adjustments are disabled.")
-            return # Do nothing if disabled
+            logger.warning(
+                f"[{self.name}] Failure reported but adjustments are disabled."
+            )
+            return  # Do nothing if disabled
 
-        self._success_streak = 0 # Reset success streak on failure
+        self._success_streak = 0  # Reset success streak on failure
 
         # Decrease limit multiplicatively, but not below min_limit
         new_limit = max(self._current_limit * self.decrease_factor, self.min_limit)
@@ -123,16 +129,16 @@ class ConcurrencyManager:
             old_limit_int = self.get_limit()
             self._current_limit = new_limit
             current_time = time.monotonic()
-            self._last_failure_time = current_time # Record time of failure reduction
+            self._last_failure_time = current_time  # Record time of failure reduction
             logger.warning(
                 f"[{self.name}] Limit decreased: {old_limit_int} -> {self.get_limit()} "
                 f"(failure detected)"
             )
         else:
-             # Already at min_limit, log that a failure occurred but limit didn't change
-             logger.warning(
-                 f"[{self.name}] Failure detected but limit already at minimum ({self.get_limit()})"
-             )
+            # Already at min_limit, log that a failure occurred but limit didn't change
+            logger.warning(
+                f"[{self.name}] Failure detected but limit already at minimum ({self.get_limit()})"
+            )
 
     def __repr__(self) -> str:
         return (

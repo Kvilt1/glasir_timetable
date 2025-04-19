@@ -1,5 +1,6 @@
 import re
 from typing import Dict
+
 from glasir_timetable.shared import logger
 
 LNAME_PATTERNS = [

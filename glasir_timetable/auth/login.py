@@ -1,12 +1,21 @@
 import re
-from typing import Optional, Dict, Any
-from playwright.async_api import Page, Error as PlaywrightError
+from typing import Any, Dict, Optional
+
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Page
+
 from glasir_timetable.shared import logger
 from glasir_timetable.storage.profile_manager import ProfileManager
 
 # Compiled regex patterns for performance
-_RE_GUID = re.compile(r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}")
-_RE_NAME_CLASS = re.compile(r"N[æ&aelig;]mingatímatalva:\s*([^,<]+?)\s*,\s*([^\s<]+)", re.IGNORECASE)
+_RE_GUID = re.compile(
+    r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}"
+)
+_RE_NAME_CLASS = re.compile(
+    r"N[æ&aelig;]mingatímatalva:\s*([^,<]+?)\s*,\s*([^\s<]+)", re.IGNORECASE
+)
+
+
 async def _extract_student_info_from_page(page: Page) -> Optional[Dict[str, Any]]:
     """
     Extracts student ID, name, and class from the timetable page content.
@@ -58,14 +67,13 @@ async def _extract_student_info_from_page(page: Page) -> Optional[Dict[str, Any]
                 "() => document.querySelector('.main-content p')?.textContent.match(/Class: ([^,]+)/)?.[1].trim()"
             )
             if student_name_js and not student_info["name"]:
-                 student_info["name"] = student_name_js
-                 logger.debug(f"Extracted student name via JS: {student_info['name']}")
+                student_info["name"] = student_name_js
+                logger.debug(f"Extracted student name via JS: {student_info['name']}")
             if class_name_js and not student_info["class"]:
-                 student_info["class"] = class_name_js
-                 logger.debug(f"Extracted student class via JS: {student_info['class']}")
+                student_info["class"] = class_name_js
+                logger.debug(f"Extracted student class via JS: {student_info['class']}")
         except Exception as e:
             logger.warning(f"Error extracting student name/class via JS fallback: {e}")
-
 
     # Return the dictionary if ID was found, otherwise None might be more appropriate
     # depending on requirements. For now, return dict even with missing parts.
@@ -73,11 +81,15 @@ async def _extract_student_info_from_page(page: Page) -> Optional[Dict[str, Any]
         logger.info(f"Successfully extracted student info: {student_info}")
         return student_info
     else:
-        logger.error("Failed to extract essential student ID. Cannot return student info.")
+        logger.error(
+            "Failed to extract essential student ID. Cannot return student info."
+        )
         return None
 
 
-async def login(page: Page, username: str, password: str, domain: str = "glasir.fo") -> None:
+async def login(
+    page: Page, username: str, password: str, domain: str = "glasir.fo"
+) -> None:
     """
     Async login to Glasir timetable via Microsoft OAuth + ADFS.
 
@@ -133,15 +145,22 @@ async def login(page: Page, username: str, password: str, domain: str = "glasir.
                 current_info = await user_profile.load_student_info()
 
                 # Check if info is missing or incomplete
-                if not current_info or not all(k in current_info and current_info[k] for k in ("id", "name", "class")):
-                    logger.info(f"Student info missing/incomplete for {username}. Extracting...")
+                if not current_info or not all(
+                    k in current_info and current_info[k]
+                    for k in ("id", "name", "class")
+                ):
+                    logger.info(
+                        f"Student info missing/incomplete for {username}. Extracting..."
+                    )
                     extracted_info = await _extract_student_info_from_page(page)
 
                     if extracted_info and extracted_info.get("id"):
                         # Merge with existing data if any (prefer extracted non-empty values)
                         merged_info = current_info or {}
                         for key, value in extracted_info.items():
-                            if value: # Only update if extracted value is not None/empty
+                            if (
+                                value
+                            ):  # Only update if extracted value is not None/empty
                                 merged_info[key] = value
                         # Ensure all keys exist, default to "Unknown" if needed (though ID should exist)
                         merged_info.setdefault("id", extracted_info.get("id"))
@@ -150,15 +169,25 @@ async def login(page: Page, username: str, password: str, domain: str = "glasir.
 
                         # Save the updated info using the profile object's method
                         await user_profile.save_student_info(merged_info)
-                        logger.info(f"Saved extracted/updated student info for {username}")
+                        logger.info(
+                            f"Saved extracted/updated student info for {username}"
+                        )
                     else:
-                        logger.warning(f"Failed to extract student info for {username} after login.")
+                        logger.warning(
+                            f"Failed to extract student info for {username} after login."
+                        )
                 else:
-                    logger.info(f"Student info already present and complete for {username}.")
+                    logger.info(
+                        f"Student info already present and complete for {username}."
+                    )
             except FileNotFoundError:
-                 logger.error(f"Profile '{username}' not found after login. Cannot save student info.")
+                logger.error(
+                    f"Profile '{username}' not found after login. Cannot save student info."
+                )
             except Exception as e_info:
-                 logger.error(f"Error loading/saving student info for profile '{username}': {e_info}")
+                logger.error(
+                    f"Error loading/saving student info for profile '{username}': {e_info}"
+                )
             # --- End Student Info Handling ---
 
         except Exception as e:

@@ -1,9 +1,12 @@
+import asyncio
+from typing import Any, Dict, Optional
+
 import httpx
 from httpx import Limits
-import asyncio
-from typing import Optional, Dict, Any
+
 from glasir_timetable.shared import logger
 from glasir_timetable.shared.concurrency_manager import ConcurrencyManager
+
 
 class AsyncApiClient:
     """
@@ -33,19 +36,19 @@ class AsyncApiClient:
             verify=True,
             cookies=self.cookies,
             limits=limits,
-            http2=True  # Enable HTTP/2 negotiation
+            http2=True,  # Enable HTTP/2 negotiation
         )
 
     async def __aenter__(self):
         return self
-        
+
     async def __aexit__(self, *args):
         await self.close()
 
     async def close(self):
         await self.client.aclose()
 
-    async def _request_with_retries( # Add force_max_concurrency flag
+    async def _request_with_retries(  # Add force_max_concurrency flag
         self,
         method: str,
         url: str,
@@ -55,12 +58,14 @@ class AsyncApiClient:
         headers: Optional[Dict[str, str]] = None,
         inject_params: bool = True,
         concurrency_manager: Optional[ConcurrencyManager] = None,
-        force_max_concurrency: bool = False, # New flag
-        **kwargs
+        force_max_concurrency: bool = False,  # New flag
+        **kwargs,
     ) -> httpx.Response:
         attempt = 0
         last_exc = None
-        full_url = url if url.startswith("http") else f"{self.base_url}/{url.lstrip('/')}"
+        full_url = (
+            url if url.startswith("http") else f"{self.base_url}/{url.lstrip('/')}"
+        )
         merged_data = data.copy() if data else {}
 
         # Inject session params if needed
@@ -75,7 +80,7 @@ class AsyncApiClient:
                     params=params,
                     data=merged_data,
                     headers=headers,
-                    **kwargs
+                    **kwargs,
                 )
                 response.raise_for_status()
                 # Only report success if manager exists AND force flag is OFF
@@ -89,7 +94,9 @@ class AsyncApiClient:
                 report_failure = False
                 if isinstance(e, (httpx.TimeoutException, httpx.ConnectError)):
                     report_failure = True
-                elif isinstance(e, httpx.HTTPStatusError) and e.response.status_code in [429, 500, 503]:
+                elif isinstance(
+                    e, httpx.HTTPStatusError
+                ) and e.response.status_code in [429, 500, 503]:
                     report_failure = True
 
                 # Only report failure if conditions met AND manager exists AND force flag is OFF
@@ -98,17 +105,21 @@ class AsyncApiClient:
 
                 # Log sanitized endpoint (without query params)
                 endpoint = full_url.split("?")[0]
-                logger.warning(f"API {method} {endpoint} attempt {attempt+1} failed: {type(e).__name__}")
+                logger.warning(
+                    f"API {method} {endpoint} attempt {attempt+1} failed: {type(e).__name__}"
+                )
                 attempt += 1
                 if attempt >= self.max_retries:
                     break
                 sleep_time = self.backoff_factor * (2 ** (attempt - 1))
                 await asyncio.sleep(sleep_time)
         endpoint = full_url.split("?")[0]
-        logger.error(f"API {method} {endpoint} failed after {self.max_retries} attempts")
+        logger.error(
+            f"API {method} {endpoint} failed after {self.max_retries} attempts"
+        )
         raise last_exc
 
-    async def get( # Add force_max_concurrency flag
+    async def get(  # Add force_max_concurrency flag
         self,
         url: str,
         *,
@@ -116,15 +127,21 @@ class AsyncApiClient:
         headers: Optional[Dict[str, str]] = None,
         inject_params: bool = True,
         concurrency_manager: Optional[ConcurrencyManager] = None,
-        force_max_concurrency: bool = False, # New flag
-        **kwargs
+        force_max_concurrency: bool = False,  # New flag
+        **kwargs,
     ) -> httpx.Response:
         return await self._request_with_retries(
-            "GET", url, params=params, headers=headers, inject_params=inject_params,
-            concurrency_manager=concurrency_manager, force_max_concurrency=force_max_concurrency, **kwargs # Pass flag
+            "GET",
+            url,
+            params=params,
+            headers=headers,
+            inject_params=inject_params,
+            concurrency_manager=concurrency_manager,
+            force_max_concurrency=force_max_concurrency,
+            **kwargs,  # Pass flag
         )
 
-    async def post( # Add force_max_concurrency flag
+    async def post(  # Add force_max_concurrency flag
         self,
         url: str,
         *,
@@ -132,10 +149,16 @@ class AsyncApiClient:
         headers: Optional[Dict[str, str]] = None,
         inject_params: bool = True,
         concurrency_manager: Optional[ConcurrencyManager] = None,
-        force_max_concurrency: bool = False, # New flag
-        **kwargs
+        force_max_concurrency: bool = False,  # New flag
+        **kwargs,
     ) -> httpx.Response:
         return await self._request_with_retries(
-            "POST", url, data=data, headers=headers, inject_params=inject_params,
-            concurrency_manager=concurrency_manager, force_max_concurrency=force_max_concurrency, **kwargs # Pass flag
+            "POST",
+            url,
+            data=data,
+            headers=headers,
+            inject_params=inject_params,
+            concurrency_manager=concurrency_manager,
+            force_max_concurrency=force_max_concurrency,
+            **kwargs,  # Pass flag
         )
